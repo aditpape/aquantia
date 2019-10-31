@@ -1,0 +1,68 @@
+Index: sys/net/ethertypes.h
+===================================================================
+RCS file: /src/cvs/cvsroot-netbsd/src/sys/net/ethertypes.h,v
+retrieving revision 1.18
+diff -a -u -r1.18 ethertypes.h
+--- sys/net/ethertypes.h	23 Sep 2012 01:14:19 -0000	1.18
++++ sys/net/ethertypes.h	9 Oct 2019 06:26:11 -0000
+@@ -299,6 +299,7 @@
+ #define	ETHERTYPE_LANPROBE	0x8888	/* HP LanProbe test? */
+ #define	ETHERTYPE_PAE		0x888e	/* EAPOL PAE/802.1x */
+ #define	ETHERTYPE_AOE		0x88a2	/* ATA over Ethernet */
++#define	ETHERTYPE_QINQ		0x88a8	/* 802.1ad VLAN stacking */
+ #define	ETHERTYPE_FCOE		0x8906	/* Fibre Channel over Ethernet */
+ #define	ETHERTYPE_LOOPBACK	0x9000	/* Loopback */
+ #define	ETHERTYPE_LBACK		ETHERTYPE_LOOPBACK	/* DEC MOP loopback */
+Index: sys/dev/pci/files.pci
+===================================================================
+RCS file: /src/cvs/cvsroot-netbsd/src/sys/dev/pci/files.pci,v
+retrieving revision 1.415
+diff -a -u -r1.415 files.pci
+--- sys/dev/pci/files.pci	22 Sep 2019 09:54:56 -0000	1.415
++++ sys/dev/pci/files.pci	23 Oct 2019 05:35:53 -0000
+@@ -1162,3 +1162,8 @@
+ file	dev/pci/if_ena.c			ena
+ file	external/bsd/ena-com/ena_com.c		ena
+ file	external/bsd/ena-com/ena_eth_com.c	ena
++
++# Aquantia/Atlantic 10-Gigabit Ethernet
++device	aq: ether, ifnet, arp
++attach	aq at pci
++file	dev/pci/if_aq.c		aq
+Index: sys/dev/pci/pcidevs
+===================================================================
+RCS file: /src/cvs/cvsroot-netbsd/src/sys/dev/pci/pcidevs,v
+retrieving revision 1.1389
+diff -a -u -r1.1389 pcidevs
+--- sys/dev/pci/pcidevs	29 Oct 2019 16:31:48 -0000	1.1389
++++ sys/dev/pci/pcidevs	29 Oct 2019 21:35:50 -0000
+@@ -651,6 +651,7 @@
+ vendor HGST		0x1c58	HGST, Inc.
+ vendor BEIJING_MEMBLAZE	0x1c5f	Beijing Memblaze Technology Co. Ltd.
+ vendor AMAZON		0x1d0f	Amazon.com, Inc.
++vendor AQUANTIA		0x1d6a	Aquantia
+ vendor ROCKCHIP		0x1d87	Rockchip
+ vendor TEKRAM2		0x1de1	Tekram Technology (2nd PCI Vendor ID)
+ vendor SUNIX2		0x1fd4	SUNIX Co
+@@ -1282,6 +1283,21 @@
+ product APPLE INTREPID2_GMAC	0x006b	Intrepid 2 GMAC
+ product APPLE BCM5701		0x1645	BCM5701
+ 
++/* Aquantia Corp. */
++product AQUANTIA AQC107		0x07b1	AQC107 10 Gigabit Ethernet Adapter
++product AQUANTIA AQC108		0x08b1	AQC108 5 Gigabit Network Adapter
++product AQUANTIA AQC109		0x09b1	AQC109 2.5 Gigabit Network Adapter
++product AQUANTIA AQC111		0x11b1	AQC111 5 Gigabit Network Adapter
++product AQUANTIA AQC112		0x12b1	AQC112 2.5 Gigabit Network Adapter
++product AQUANTIA AQC107S	0x87b1	AQC107S 10 Gigabit Ethernet Adapter
++product AQUANTIA AQC108S	0x88b1	AQC108S 5 Gigabit Ethernet Adapter
++product AQUANTIA AQC109S	0x89b1	AQC109S 2.5 Gigabit Ethernet Adapter
++product AQUANTIA AQC111S	0x91b1	AQC111S 5 Gigabit Ethernet Adapter
++product AQUANTIA AQC112S	0x92b1	AQC112S 2.5 Gigabit Ethernet Adapter
++product AQUANTIA D107		0xd107	D107 10 Gigabit Ethernet Adapter
++product AQUANTIA D108		0xd108	D108 5 Gigabit Ethernet Adapter
++product AQUANTIA D109		0xd109	D109 2.5 Gigabit Ethernet Adapter
++
+ /* ARC Logic products */
+ product ARC 1000PV	0xa091	1000PV
+ product ARC 2000PV	0xa099	2000PV
