@@ -2544,7 +2544,7 @@ aq_hw_qos_set(struct aq_softc *sc)
 	/* QoS 802.1p priority -> TC mapping */
 	int i_priority;
 	for (i_priority = 0; i_priority < 8; i_priority++) {
-		AQ_WRITE_REG_BIT(sc, RPF_RPB_RX_TC_UPT_REG, RPF_RPB_RX_TC_UPT_MASK(0), i_priority);
+		AQ_WRITE_REG_BIT(sc, RPF_RPB_RX_TC_UPT_REG, RPF_RPB_RX_TC_UPT_MASK(i_priority), 0);
 	}
 }
 
