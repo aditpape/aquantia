@@ -3779,7 +3779,7 @@ aq_rx_intr(struct aq_rxring *rxring)
 				"UDP",
 				"SCTP",
 				"ICMP",
-				"PKTTYPE_PROTO4",
+				"ARP",
 				"PKTTYPE_PROTO5", 
 				"PKTTYPE_PROTO6", 
 				"PKTTYPE_PROTO7"
