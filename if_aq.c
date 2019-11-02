@@ -2434,22 +2434,58 @@ aq_hw_interrupt_moderation_set(struct aq_softc *sc)
 	int i;
 
 	if (sc->sc_intr_moderation_enable) {
+		unsigned int tx_min, rx_min;	/* 0-255 */
+		unsigned int tx_max, rx_max;	/* 0-511? */
+
+		switch (sc->sc_link_rate) {
+		case AQ_LINK_100M:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x04;
+			rx_max = 0x50;
+			break;
+		case AQ_LINK_1G:
+		default:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x30;
+			rx_max = 0x80;
+			break;
+		case AQ_LINK_2G5:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x18;
+			rx_max = 0xe0;
+			break;
+		case AQ_LINK_5G:
+			tx_min = 0x4f;
+			tx_max = 0xff;
+			rx_min = 0x0c;
+			rx_max = 0x70;
+			break;
+		case AQ_LINK_10G:
+			tx_min = 0x4f;
+			tx_max = 0x1ff;
+			rx_min = 0x50;	/* 0x06 */
+			rx_max = 0x78;	/* 0x38 */
+			break;
+		}
+
 		AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_REG, TX_DMA_INT_DESC_WRWB_EN, 0);
 		AQ_WRITE_REG_BIT(sc, TX_DMA_INT_DESC_WRWB_EN_REG, TX_DMA_INT_DESC_MODERATE_EN, 1);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_WRWB_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_INT_DESC_WRWB_EN_REG, RX_DMA_INT_DESC_MODERATE_EN, 1);
 
-		//XXX: should be configured according to link speed...
 		for (i = 0; i < sc->sc_txringnum; i++) {
 			AQ_WRITE_REG(sc, TX_INTR_MODERATION_CTL_REG(i),
-			    __SHIFTIN(0x0f, TX_INTR_MODERATION_CTL_MIN) |
-			    __SHIFTIN(0x1ff, TX_INTR_MODERATION_CTL_MAX) |
+			    __SHIFTIN(tx_min, TX_INTR_MODERATION_CTL_MIN) |
+			    __SHIFTIN(tx_max, TX_INTR_MODERATION_CTL_MAX) |
 			    TX_INTR_MODERATION_CTL_EN);
 		}
 		for (i = 0; i < sc->sc_rxringnum; i++) {
 			AQ_WRITE_REG(sc, RX_INTR_MODERATION_CTL_REG(i),
-			    __SHIFTIN(0x30, RX_INTR_MODERATION_CTL_MIN) |
-			    __SHIFTIN(0x80, RX_INTR_MODERATION_CTL_MAX) |
+			    __SHIFTIN(rx_min, RX_INTR_MODERATION_CTL_MIN) |
+			    __SHIFTIN(rx_max, RX_INTR_MODERATION_CTL_MAX) |
 			    RX_INTR_MODERATION_CTL_EN);
 		}
 
