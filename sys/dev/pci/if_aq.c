@@ -1137,7 +1137,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	pci_chipset_tag_t pc;
 	pcitag_t tag;
-	pcireg_t memtype, bar;
+	pcireg_t command, memtype, bar;
 	const struct aq_product *aqp;
 	pci_intr_handle_t ih;
 	const char *intrstr;
@@ -1156,6 +1156,10 @@ aq_attach(device_t parent, device_t self, void *aux)
 #else
 	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
 #endif
+
+	command = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
+	command |= PCI_COMMAND_MASTER_ENABLE;
+	pci_conf_write(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG, command);
 
 	sc->sc_product = PCI_PRODUCT(pa->pa_id);
 	sc->sc_revision = PCI_REVISION(pa->pa_class);
