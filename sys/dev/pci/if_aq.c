@@ -1,4 +1,4 @@
-#define XXX_FORCE_32BIT_PA
+//#define XXX_FORCE_32BIT_PA
 //#define XXX_FORCE_UDP_TO_RING0
 //#define XXX_NO_TXRX_INDEPENDENT
 //#define XXX_NO_MSIX
@@ -18,20 +18,6 @@
 //#define XXX_DUMP_RING
 //#define XXX_DUMP_RSSKEY
 //#define XXX_DEBUG_RSSKEY_ZERO
-
-#define AQ_EVENT_COUNTERS	/* XXX: opt_if_aq.h */
-
-//
-// terminology
-//
-//	MPI = MAC PHY INTERFACE?
-//	RPO = RX Protocol Offloading
-//	TPO = TX Protocol Offloading
-//	RPF = RX Packet Filter
-//	TPB = TX Packet buffer
-//	RPB = RX Packet buffer
-//
-
 
 /*	$NetBSD$	*/
 
@@ -99,6 +85,11 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD$");
 
+#ifdef _KERNEL_OPT
+#include "opt_net_mpsafe.h"
+#include "opt_if_aq.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/bitops.h>
@@ -156,6 +147,16 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_TRAFFICCLASS_NUM		8
 #define AQ_RSS_HASHKEY_SIZE		40
 #define AQ_RSS_INDIRECTION_TABLE_MAX	64
+
+/*
+ * TERMINOLOGY
+ *	MPI = MAC PHY INTERFACE?
+ *	RPO = RX Protocol Offloading
+ *	TPO = TX Protocol Offloading
+ *	RPF = RX Packet Filter
+ *	TPB = TX Packet buffer
+ *	RPB = RX Packet buffer
+ */
 
 /* registers */
 #define AQ_FW_SOFTRESET_REG			0x0000
@@ -841,38 +842,38 @@ typedef struct aq_tx_desc {
 
 
 struct aq_txring {
-	struct aq_softc *ring_sc;
-	int ring_index;
-	kmutex_t ring_mutex;
+	struct aq_softc *txr_sc;
+	int txr_index;
+	kmutex_t txr_mutex;
 
-	aq_tx_desc_t *ring_txdesc;	/* aq_tx_desc_t[AQ_TXD_NUM] */
-	bus_dmamap_t ring_txdesc_dmamap;
-	bus_dma_segment_t ring_txdesc_seg[1];
-	bus_size_t ring_txdesc_size;
+	aq_tx_desc_t *txr_txdesc;	/* aq_tx_desc_t[AQ_TXD_NUM] */
+	bus_dmamap_t txr_txdesc_dmamap;
+	bus_dma_segment_t txr_txdesc_seg[1];
+	bus_size_t txr_txdesc_size;
 
 	struct {
 		struct mbuf *m;
 		bus_dmamap_t dmamap;
-	} ring_mbufs[AQ_TXD_NUM];
-	unsigned int ring_prodidx;
-	unsigned int ring_considx;
-	int ring_nfree;
+	} txr_mbufs[AQ_TXD_NUM];
+	unsigned int txr_prodidx;
+	unsigned int txr_considx;
+	int txr_nfree;
 };
 
 struct aq_rxring {
-	struct aq_softc *ring_sc;
-	int ring_index;
-	kmutex_t ring_mutex;
+	struct aq_softc *rxr_sc;
+	int rxr_index;
+	kmutex_t rxr_mutex;
 
-	aq_rx_desc_t *ring_rxdesc;	/* aq_rx_desc_t[AQ_RXD_NUM] */
-	bus_dmamap_t ring_rxdesc_dmamap;
-	bus_dma_segment_t ring_rxdesc_seg[1];
-	bus_size_t ring_rxdesc_size;
+	aq_rx_desc_t *rxr_rxdesc;	/* aq_rx_desc_t[AQ_RXD_NUM] */
+	bus_dmamap_t rxr_rxdesc_dmamap;
+	bus_dma_segment_t rxr_rxdesc_seg[1];
+	bus_size_t rxr_rxdesc_size;
 	struct {
 		struct mbuf *m;
 		bus_dmamap_t dmamap;
-	} ring_mbufs[AQ_RXD_NUM];
-	unsigned int ring_readidx;
+	} rxr_mbufs[AQ_RXD_NUM];
+	unsigned int rxr_readidx;
 };
 
 struct aq_queue {
@@ -891,9 +892,7 @@ struct aq_firmware_ops {
 	int (*get_stats)(struct aq_softc *, aq_hw_stats_s_t *);
 };
 
-
 #ifdef AQ_EVENT_COUNTERS
-
 #define AQ_EVCNT_DECL(name)						\
 	char sc_evcount_##name##_name[32];				\
 	struct evcnt sc_evcount_##name##_ev;
@@ -908,19 +907,10 @@ struct aq_firmware_ops {
 	} while (/*CONSTCOND*/0)
 #define AQ_EVCNT_ATTACH_MISC(sc, name, desc)				\
 	AQ_EVCNT_ATTACH(sc, name, desc, EVCNT_TYPE_MISC)
-
 #define AQ_EVCNT_DETACH(sc, name)					\
 	evcnt_detach(&(sc)->sc_evcount_##name##_ev)
 #define AQ_EVCNT_ADD(sc, name, val)					\
 	((sc)->sc_evcount_##name##_ev.ev_count += (val))
-
-#else /* !AQ_EVENT_COUNTERS */
-
-#define AQ_EVCNT_DECL(name)
-#define AQ_EVCNT_ATTACH(sc, name, desc, xname, evtype)	__nothing
-#define AQ_EVCNT_DETACH(sc, name)			__nothing
-#define AQ_EVCNT_ADD(sc, name, val)			__nothing
-
 #endif /* AQ_EVENT_COUNTERS */
 
 struct aq_softc {
@@ -996,9 +986,10 @@ struct aq_softc {
 	int sc_ec_capenable;		/* last ec_capenable */
 	unsigned short sc_if_flags;	/* last if_flags */
 
+#ifdef AQ_EVENT_COUNTERS
 	aq_hw_stats_s_t sc_statistics[2];
 	int sc_statistics_idx;
-	bool sc_statistics_available;
+	bool sc_poll_statistics;
 
 	AQ_EVCNT_DECL(uprc);
 	AQ_EVCNT_DECL(mprc);
@@ -1018,6 +1009,7 @@ struct aq_softc {
 	AQ_EVCNT_DECL(prc);
 	AQ_EVCNT_DECL(dpc);
 	AQ_EVCNT_DECL(cprc);
+#endif
 };
 
 static int aq_match(device_t, cfdata_t, void *);
@@ -1393,8 +1385,16 @@ aq_attach(device_t parent, device_t self, void *aux)
 	// TSO
 	ifp->if_capabilities |= IFCAP_TSOv4 | IFCAP_TSOv6;
 #endif
+
 #if notyet
-	// XXX: RX L4 CSUM doesn't work for fragment packet... RX L4 CSUM is requied for LRO?
+	/*
+	 * XXX:
+	 *   Rx L4 CSUM doesn't work well for fragment packet.
+	 *   aq marks 'CHEDKED' and 'BAD' for them.
+	 *   we need to ignore (clear) hw-csum flags if the packet is fragmented.
+	 *
+	 *   TODO: test with LRO enabled
+	 */
 	ifp->if_capabilities |= IFCAP_CSUM_TCPv4_Rx | IFCAP_CSUM_TCPv6_Rx;
 	ifp->if_capabilities |= IFCAP_CSUM_UDPv4_Rx | IFCAP_CSUM_UDPv6_Rx;
 #endif
@@ -1415,10 +1415,11 @@ aq_attach(device_t parent, device_t self, void *aux)
 	/* media update */
 	aq_mediachange(ifp);
 
+#ifdef AQ_EVENT_COUNTERS
 	/* get starting statistics values */
 	if (sc->sc_fw_ops != NULL && sc->sc_fw_ops->get_stats != NULL &&
 	    sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[0]) == 0) {
-		sc->sc_statistics_available = true;
+		sc->sc_poll_statistics = true;
 	}
 
 	AQ_EVCNT_ATTACH_MISC(sc, uprc, "RX unicast packet");
@@ -1439,6 +1440,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	AQ_EVCNT_ATTACH_MISC(sc, ptc, "TX good packet");
 	AQ_EVCNT_ATTACH_MISC(sc, dpc, "DMA drop packet");
 	AQ_EVCNT_ATTACH_MISC(sc, cprc, "RX coalesced packet");
+#endif
 
 	return;
 
@@ -1486,6 +1488,7 @@ aq_detach(device_t self, int flags __unused)
 
 	callout_stop(&sc->sc_tick_ch);
 
+#ifdef AQ_EVENT_COUNTERS
 	AQ_EVCNT_DETACH(sc, uprc);
 	AQ_EVCNT_DETACH(sc, mprc);
 	AQ_EVCNT_DETACH(sc, bprc);
@@ -1504,6 +1507,7 @@ aq_detach(device_t self, int flags __unused)
 	AQ_EVCNT_DETACH(sc, prc);
 	AQ_EVCNT_DETACH(sc, dpc);
 	AQ_EVCNT_DETACH(sc, cprc);
+#endif
 
 	mutex_destroy(&sc->sc_mutex);
 
@@ -3230,51 +3234,51 @@ aq_update_link_status(struct aq_softc *sc)
 	return changed;
 }
 
+#ifdef AQ_EVENT_COUNTERS
 static void
 aq_update_statistics(struct aq_softc *sc)
 {
-	if (sc->sc_statistics_available) {
-		int prev = sc->sc_statistics_idx;
-		int cur = prev ^ 1;
+	int prev = sc->sc_statistics_idx;
+	int cur = prev ^ 1;
 
-		sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[cur]);
+	sc->sc_fw_ops->get_stats(sc, &sc->sc_statistics[cur]);
 
-		/*
-		 * aq's internal statistics counter is 32bit.
-		 * cauculate delta, and add to evcount
-		 */
-#define ADD_DELTA(cur, prev, name)					\
-		do {							\
-			uint32_t n;					\
-			n = (uint32_t)(sc->sc_statistics[cur].name -	\
-			    sc->sc_statistics[prev].name);		\
-			if (n != 0) {					\
-				AQ_EVCNT_ADD(sc, name, n);		\
-			}						\
-		} while (/*CONSTCOND*/0);
+	/*
+	 * aq's internal statistics counter is 32bit.
+	 * cauculate delta, and add to evcount
+	 */
+#define ADD_DELTA(cur, prev, name)				\
+	do {							\
+		uint32_t n;					\
+		n = (uint32_t)(sc->sc_statistics[cur].name -	\
+		    sc->sc_statistics[prev].name);		\
+		if (n != 0) {					\
+			AQ_EVCNT_ADD(sc, name, n);		\
+		}						\
+	} while (/*CONSTCOND*/0);
 
-		ADD_DELTA(cur, prev, uprc);
-		ADD_DELTA(cur, prev, mprc);
-		ADD_DELTA(cur, prev, bprc);
-		ADD_DELTA(cur, prev, prc);
-		ADD_DELTA(cur, prev, erpr);
-		ADD_DELTA(cur, prev, uptc);
-		ADD_DELTA(cur, prev, mptc);
-		ADD_DELTA(cur, prev, bptc);
-		ADD_DELTA(cur, prev, ptc);
-		ADD_DELTA(cur, prev, erpt);
-		ADD_DELTA(cur, prev, mbtc);
-		ADD_DELTA(cur, prev, bbtc);
-		ADD_DELTA(cur, prev, mbrc);
-		ADD_DELTA(cur, prev, bbrc);
-		ADD_DELTA(cur, prev, ubrc);
-		ADD_DELTA(cur, prev, ubtc);
-		ADD_DELTA(cur, prev, dpc);
-		ADD_DELTA(cur, prev, cprc);
+	ADD_DELTA(cur, prev, uprc);
+	ADD_DELTA(cur, prev, mprc);
+	ADD_DELTA(cur, prev, bprc);
+	ADD_DELTA(cur, prev, prc);
+	ADD_DELTA(cur, prev, erpr);
+	ADD_DELTA(cur, prev, uptc);
+	ADD_DELTA(cur, prev, mptc);
+	ADD_DELTA(cur, prev, bptc);
+	ADD_DELTA(cur, prev, ptc);
+	ADD_DELTA(cur, prev, erpt);
+	ADD_DELTA(cur, prev, mbtc);
+	ADD_DELTA(cur, prev, bbtc);
+	ADD_DELTA(cur, prev, mbrc);
+	ADD_DELTA(cur, prev, bbrc);
+	ADD_DELTA(cur, prev, ubrc);
+	ADD_DELTA(cur, prev, ubtc);
+	ADD_DELTA(cur, prev, dpc);
+	ADD_DELTA(cur, prev, cprc);
 
-		sc->sc_statistics_idx = cur;
-	}
+	sc->sc_statistics_idx = cur;
 }
+#endif /* AQ_EVENT_COUNTERS */
 
 /* allocate and map one DMA block */
 static int
@@ -3353,23 +3357,23 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 
 	/* allocate tx descriptors */
 	error = _alloc_dma(sc, sizeof(aq_tx_desc_t) * AQ_TXD_NUM,
-	    &txring->ring_txdesc_size, (void **)&txring->ring_txdesc,
-	    &txring->ring_txdesc_dmamap, txring->ring_txdesc_seg);
+	    &txring->txr_txdesc_size, (void **)&txring->txr_txdesc,
+	    &txring->txr_txdesc_dmamap, txring->txr_txdesc_seg);
 	if (error != 0)
 		return error;
 
 #ifdef XXX_DEBUG_PMAP_EXTRACT
 	{
 		bool ok;
-		char *descp = (char *)txring->ring_txdesc;
+		char *descp = (char *)txring->txr_txdesc;
 		paddr_t pa;
 		vaddr_t va;
 
 
-		printf("TX desc size = %lu\n", txring->ring_txdesc_size);
-		printf("TX desc DM_SEGS[0] = PA=%08lx\n", txring->ring_txdesc_dmamap->dm_segs[0].ds_addr);
+		printf("TX desc size = %lu\n", txring->txr_txdesc_size);
+		printf("TX desc DM_SEGS[0] = PA=%08lx\n", txring->txr_txdesc_dmamap->dm_segs[0].ds_addr);
 
-		for (i = 0; (bus_size_t)(PAGE_SIZE * i) < txring->ring_txdesc_size; i++) {
+		for (i = 0; (bus_size_t)(PAGE_SIZE * i) < txring->txr_txdesc_size; i++) {
 			va = (vaddr_t)descp + PAGE_SIZE * i;
 			ok = pmap_extract(pmap_kernel(), va, &pa);
 			printf("TX desc VA=%lx, PA=%08lx, ok=%d\n", va, pa, ok);
@@ -3377,7 +3381,7 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	}
 #endif
 
-	memset(txring->ring_txdesc, 0, sizeof(aq_tx_desc_t) * AQ_TXD_NUM);
+	memset(txring->txr_txdesc, 0, sizeof(aq_tx_desc_t) * AQ_TXD_NUM);
 
 	/* fill tx ring with dmamap */
 	for (i = 0; i < AQ_TXD_NUM; i++) {
@@ -3386,7 +3390,7 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 		//XXX: todo: error check
 		bus_dmamap_create(sc->sc_dmat, AQ_MAXDMASIZE, AQ_NTXSEGS,
 		    AQ_MAXDMASIZE, 0, 0,
-		    &txring->ring_mbufs[i].dmamap);
+		    &txring->txr_mbufs[i].dmamap);
 	}
 	return 0;
 }
@@ -3396,18 +3400,18 @@ aq_txring_free(struct aq_softc *sc, struct aq_txring *txring)
 {
 	int i;
 
-	_free_dma(sc, &txring->ring_txdesc_size, (void **)&txring->ring_txdesc,
-	    &txring->ring_txdesc_dmamap, txring->ring_txdesc_seg);
+	_free_dma(sc, &txring->txr_txdesc_size, (void **)&txring->txr_txdesc,
+	    &txring->txr_txdesc_dmamap, txring->txr_txdesc_seg);
 
 	for (i = 0; i < AQ_TXD_NUM; i++) {
-		if (txring->ring_mbufs[i].dmamap != NULL) {
-			if (txring->ring_mbufs[i].m != NULL) {
-				bus_dmamap_unload(sc->sc_dmat, txring->ring_mbufs[i].dmamap);
-				m_freem(txring->ring_mbufs[i].m);
-				txring->ring_mbufs[i].m = NULL;
+		if (txring->txr_mbufs[i].dmamap != NULL) {
+			if (txring->txr_mbufs[i].m != NULL) {
+				bus_dmamap_unload(sc->sc_dmat, txring->txr_mbufs[i].dmamap);
+				m_freem(txring->txr_mbufs[i].m);
+				txring->txr_mbufs[i].m = NULL;
 			}
-			bus_dmamap_destroy(sc->sc_dmat, txring->ring_mbufs[i].dmamap);
-			txring->ring_mbufs[i].dmamap = NULL;
+			bus_dmamap_destroy(sc->sc_dmat, txring->txr_mbufs[i].dmamap);
+			txring->txr_mbufs[i].dmamap = NULL;
 		}
 	}
 }
@@ -3419,22 +3423,22 @@ aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 
 	/* allocate rx descriptors */
 	error = _alloc_dma(sc, sizeof(aq_rx_desc_t) * AQ_RXD_NUM,
-	    &rxring->ring_rxdesc_size, (void **)&rxring->ring_rxdesc,
-	    &rxring->ring_rxdesc_dmamap, rxring->ring_rxdesc_seg);
+	    &rxring->rxr_rxdesc_size, (void **)&rxring->rxr_rxdesc,
+	    &rxring->rxr_rxdesc_dmamap, rxring->rxr_rxdesc_seg);
 	if (error != 0)
 		return error;
 
 #ifdef XXX_DEBUG_PMAP_EXTRACT
 	{
 		bool ok;
-		char *descp = (char *)rxring->ring_rxdesc;
+		char *descp = (char *)rxring->rxr_rxdesc;
 		paddr_t pa;
 		vaddr_t va;
 
-		printf("RX desc size = %lu\n", rxring->ring_rxdesc_size);
-		printf("RX desc DM_SEGS[0] = PA=%08lx\n", rxring->ring_rxdesc_dmamap->dm_segs[0].ds_addr);
+		printf("RX desc size = %lu\n", rxring->rxr_rxdesc_size);
+		printf("RX desc DM_SEGS[0] = PA=%08lx\n", rxring->rxr_rxdesc_dmamap->dm_segs[0].ds_addr);
 
-		for (i = 0; (bus_size_t)(PAGE_SIZE * i) < rxring->ring_rxdesc_size; i++) {
+		for (i = 0; (bus_size_t)(PAGE_SIZE * i) < rxring->rxr_rxdesc_size; i++) {
 			va = (vaddr_t)descp + PAGE_SIZE * i;
 			ok = pmap_extract(pmap_kernel(), va, &pa);
 			printf("RX desc VA=%lx, PA=%08lx, ok=%d\n", va, pa, ok);
@@ -3442,15 +3446,15 @@ aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 	}
 #endif
 
-	memset(rxring->ring_rxdesc, 0, sizeof(aq_rx_desc_t) * AQ_RXD_NUM);
+	memset(rxring->rxr_rxdesc, 0, sizeof(aq_rx_desc_t) * AQ_RXD_NUM);
 
 	/* fill rxring with dmamaps */
 	for (i = 0; i < AQ_RXD_NUM; i++) {
-		rxring->ring_mbufs[i].m = NULL;
+		rxring->rxr_mbufs[i].m = NULL;
 		//XXX: todo: error check
 		bus_dmamap_create(sc->sc_dmat, MCLBYTES, 1,
 		    MCLBYTES, 0, 0,
-		    &rxring->ring_mbufs[i].dmamap);
+		    &rxring->rxr_mbufs[i].dmamap);
 	}
 	return 0;
 }
@@ -3462,10 +3466,10 @@ aq_rxdrain(struct aq_softc *sc, struct aq_rxring *rxring)
 
 	/* free all mbufs allocated for RX */
 	for (i = 0; i < AQ_RXD_NUM; i++) {
-		if (rxring->ring_mbufs[i].m != NULL) {
-			bus_dmamap_unload(sc->sc_dmat, rxring->ring_mbufs[i].dmamap);
-			m_freem(rxring->ring_mbufs[i].m);
-			rxring->ring_mbufs[i].m = NULL;
+		if (rxring->rxr_mbufs[i].m != NULL) {
+			bus_dmamap_unload(sc->sc_dmat, rxring->rxr_mbufs[i].dmamap);
+			m_freem(rxring->rxr_mbufs[i].m);
+			rxring->rxr_mbufs[i].m = NULL;
 		}
 	}
 }
@@ -3478,24 +3482,24 @@ aq_rxring_free(struct aq_softc *sc, struct aq_rxring *rxring)
 	/* free all mbufs and dmamaps */
 	aq_rxdrain(sc, rxring);
 	for (i = 0; i < AQ_RXD_NUM; i++) {
-		if (rxring->ring_mbufs[i].dmamap != NULL) {
-			bus_dmamap_destroy(sc->sc_dmat, rxring->ring_mbufs[i].dmamap);
-			rxring->ring_mbufs[i].dmamap = NULL;
+		if (rxring->rxr_mbufs[i].dmamap != NULL) {
+			bus_dmamap_destroy(sc->sc_dmat, rxring->rxr_mbufs[i].dmamap);
+			rxring->rxr_mbufs[i].dmamap = NULL;
 		}
 	}
 
 	/* free RX descriptor */
-	_free_dma(sc, &rxring->ring_rxdesc_size, (void **)&rxring->ring_rxdesc,
-	    &rxring->ring_rxdesc_dmamap, rxring->ring_rxdesc_seg);
+	_free_dma(sc, &rxring->rxr_rxdesc_size, (void **)&rxring->rxr_rxdesc,
+	    &rxring->rxr_rxdesc_dmamap, rxring->rxr_rxdesc_seg);
 }
 
 static inline void
 aq_rxring_reset_desc(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 {
 	/* refill rxdesc, and sync */
-	rxring->ring_rxdesc[idx].read.buf_addr = htole64(rxring->ring_mbufs[idx].dmamap->dm_segs[0].ds_addr);
-	rxring->ring_rxdesc[idx].read.hdr_addr = 0;
-	bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
+	rxring->rxr_rxdesc[idx].read.buf_addr = htole64(rxring->rxr_mbufs[idx].dmamap->dm_segs[0].ds_addr);
+	rxring->rxr_rxdesc[idx].read.hdr_addr = 0;
+	bus_dmamap_sync(sc->sc_dmat, rxring->rxr_rxdesc_dmamap,
 	    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
 	    BUS_DMASYNC_PREWRITE);
 }
@@ -3518,24 +3522,24 @@ aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 	}
 
 	/* if mbuf already exists, unload and free */
-	if (rxring->ring_mbufs[idx].m != NULL) {
-		bus_dmamap_unload(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap);
-		m_freem(rxring->ring_mbufs[idx].m);
-		rxring->ring_mbufs[idx].m = NULL;
+	if (rxring->rxr_mbufs[idx].m != NULL) {
+		bus_dmamap_unload(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap);
+		m_freem(rxring->rxr_mbufs[idx].m);
+		rxring->rxr_mbufs[idx].m = NULL;
 	}
 
-	rxring->ring_mbufs[idx].m = m;
+	rxring->rxr_mbufs[idx].m = m;
 
 	m->m_len = m->m_pkthdr.len = m->m_ext.ext_size;
-	error = bus_dmamap_load_mbuf(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap,
+	error = bus_dmamap_load_mbuf(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap,
 	    m, BUS_DMA_NOWAIT);
 	if (error) {
 		device_printf(sc->sc_dev,
 		    "unable to load rx DMA map %d, error = %d\n", idx, error);
 		panic("%s: unable to load rx DMA map. error=%d", __func__, error);
 	}
-	bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
-	    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
+	bus_dmamap_sync(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap, 0,
+	    rxring->rxr_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
 
 	aq_rxring_reset_desc(sc, rxring, idx);
 
@@ -3549,16 +3553,16 @@ aq_txrx_rings_alloc(struct aq_softc *sc)
 
 	for (n = 0; n < sc->sc_nqueues; n++) {
 		sc->sc_queue[n].sc = sc;
-		sc->sc_queue[n].txring.ring_sc = sc;
-		sc->sc_queue[n].txring.ring_index = n;
-		mutex_init(&sc->sc_queue[n].txring.ring_mutex, MUTEX_DEFAULT, IPL_NET);
+		sc->sc_queue[n].txring.txr_sc = sc;
+		sc->sc_queue[n].txring.txr_index = n;
+		mutex_init(&sc->sc_queue[n].txring.txr_mutex, MUTEX_DEFAULT, IPL_NET);
 		error = aq_txring_alloc(sc, &sc->sc_queue[n].txring);
 		if (error != 0)
 			goto failure;
 
-		sc->sc_queue[n].rxring.ring_sc = sc;
-		sc->sc_queue[n].rxring.ring_index = n;
-		mutex_init(&sc->sc_queue[n].rxring.ring_mutex, MUTEX_DEFAULT, IPL_NET);
+		sc->sc_queue[n].rxring.rxr_sc = sc;
+		sc->sc_queue[n].rxring.rxr_index = n;
+		mutex_init(&sc->sc_queue[n].rxring.rxr_mutex, MUTEX_DEFAULT, IPL_NET);
 		error = aq_rxring_alloc(sc, &sc->sc_queue[n].rxring);
 		if (error != 0)
 			break;
@@ -3577,26 +3581,26 @@ dump_txrings(struct aq_softc *sc)
 
 	for (n = 0; n < sc->sc_nqueues; n++) {
 		txring = &sc->sc_queue[n].txring;
-		mutex_enter(&txring->ring_mutex);
+		mutex_enter(&txring->txr_mutex);
 
-		printf("# txring=%p (index=%d)\n", txring, txring->ring_index);
-		printf("txring->ring_txdesc        = %p\n", txring->ring_txdesc);
-		printf("txring->ring_txdesc_dmamap = %p\n", txring->ring_txdesc_dmamap);
-		printf("txring->ring_txdesc_size   = %lu\n", txring->ring_txdesc_size);
+		printf("# txring=%p (index=%d)\n", txring, txring->txr_index);
+		printf("txring->txr_txdesc        = %p\n", txring->txr_txdesc);
+		printf("txring->txr_txdesc_dmamap = %p\n", txring->txr_txdesc_dmamap);
+		printf("txring->txr_txdesc_size   = %lu\n", txring->txr_txdesc_size);
 
 		for (i = 0; i < AQ_TXD_NUM; i++) {
-			if (txring->ring_txdesc[i].buf_addr == 0)
+			if (txring->txr_txdesc[i].buf_addr == 0)
 				continue;
 
-			printf("txring->ring_mbufs [%d].m        = %p\n", i, txring->ring_mbufs[i].m);
-			printf("txring->ring_txdesc[%d].buf_addr = %08lx\n", i, txring->ring_txdesc[i].buf_addr);
-			printf("txring->ring_txdesc[%d].ctl1  = %08x%s%s\n", i, txring->ring_txdesc[i].ctl1,
-			    (txring->ring_txdesc[i].ctl1 & AQ_TXDESC_CTL1_EOP) ? " EOP" : "",
-			    (txring->ring_txdesc[i].ctl1 & AQ_TXDESC_CTL1_CMD_WB) ? " WB" : "");
-			printf("txring->ring_txdesc[%d].ctl2 = %08x\n", i, txring->ring_txdesc[i].ctl2);
+			printf("txring->txr_mbufs [%d].m        = %p\n", i, txring->txr_mbufs[i].m);
+			printf("txring->txr_txdesc[%d].buf_addr = %08lx\n", i, txring->txr_txdesc[i].buf_addr);
+			printf("txring->txr_txdesc[%d].ctl1  = %08x%s%s\n", i, txring->txr_txdesc[i].ctl1,
+			    (txring->txr_txdesc[i].ctl1 & AQ_TXDESC_CTL1_EOP) ? " EOP" : "",
+			    (txring->txr_txdesc[i].ctl1 & AQ_TXDESC_CTL1_CMD_WB) ? " WB" : "");
+			printf("txring->txr_txdesc[%d].ctl2 = %08x\n", i, txring->txr_txdesc[i].ctl2);
 		}
 
-		mutex_exit(&txring->ring_mutex);
+		mutex_exit(&txring->txr_mutex);
 	}
 }
 
@@ -3608,18 +3612,18 @@ dump_rxrings(struct aq_softc *sc)
 
 	for (n = 0; n < sc->sc_nqueues; n++) {
 		rxring = &sc->sc_queue[n].rxring;
-		mutex_enter(&rxring->ring_mutex);
+		mutex_enter(&rxring->rxr_mutex);
 
-		printf("# rxring=%p (index=%d)\n", rxring, rxring->ring_index);
-		printf("rxring->ring_rxdesc        = %p\n", rxring->ring_rxdesc);
-		printf("rxring->ring_rxdesc_dmamap = %p\n", rxring->ring_rxdesc_dmamap);
-		printf("rxring->ring_rxdesc_size   = %lu\n", rxring->ring_rxdesc_size);
+		printf("# rxring=%p (index=%d)\n", rxring, rxring->rxr_index);
+		printf("rxring->rxr_rxdesc        = %p\n", rxring->rxr_rxdesc);
+		printf("rxring->rxr_rxdesc_dmamap = %p\n", rxring->rxr_rxdesc_dmamap);
+		printf("rxring->rxr_rxdesc_size   = %lu\n", rxring->rxr_rxdesc_size);
 		for (i = 0; i < AQ_RXD_NUM; i++) {
-			printf("rxring->ring_mbufs[%d].m      = %p\n", i, rxring->ring_mbufs[i].m);
-			printf("rxring->ring_mbufs[%d].dmamap = %p\n", i, rxring->ring_mbufs[i].dmamap);
+			printf("rxring->rxr_mbufs[%d].m      = %p\n", i, rxring->rxr_mbufs[i].m);
+			printf("rxring->rxr_mbufs[%d].dmamap = %p\n", i, rxring->rxr_mbufs[i].dmamap);
 		}
 
-		mutex_exit(&rxring->ring_mutex);
+		mutex_exit(&rxring->rxr_mutex);
 	}
 }
 #endif /* XXX_DUMP_RING */
@@ -3631,10 +3635,10 @@ aq_txrx_rings_free(struct aq_softc *sc)
 
 	for (n = 0; n < sc->sc_nqueues; n++) {
 		aq_txring_free(sc, &sc->sc_queue[n].txring);
-		mutex_destroy(&sc->sc_queue[n].txring.ring_mutex);
+		mutex_destroy(&sc->sc_queue[n].txring.txr_mutex);
 
 		aq_rxring_free(sc, &sc->sc_queue[n].rxring);
-		mutex_destroy(&sc->sc_queue[n].rxring.ring_mutex);
+		mutex_destroy(&sc->sc_queue[n].rxring.rxr_mutex);
 	}
 }
 
@@ -3646,8 +3650,10 @@ aq_tick(void *arg)
 	if (sc->sc_poll_linkstat)
 		aq_update_link_status(sc);
 
-	if (sc->sc_statistics_available)
+#ifdef AQ_EVENT_COUNTERS
+	if (sc->sc_poll_statistics)
 		aq_update_statistics(sc);
+#endif
 
 	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 }
@@ -3715,8 +3721,8 @@ aq_txrx_intr(void *arg)
 	int nintr = 0;
 	int txringidx, rxringidx, txirq, rxirq;
 
-	txringidx = txring->ring_index;
-	rxringidx = rxring->ring_index;
+	txringidx = txring->txr_index;
+	rxringidx = rxring->rxr_index;
 	txirq = sc->sc_tx_irq[txringidx];
 	rxirq = sc->sc_rx_irq[rxringidx];
 
@@ -3763,18 +3769,18 @@ aq_link_intr(void *arg)
 static void
 aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 {
-	const int ringidx = txring->ring_index;
+	const int ringidx = txring->txr_index;
 	int i;
 
-	txring->ring_prodidx = 0;
-	txring->ring_considx = 0;
-	txring->ring_nfree = AQ_TXD_NUM;
+	txring->txr_prodidx = 0;
+	txring->txr_considx = 0;
+	txring->txr_nfree = AQ_TXD_NUM;
 
 	/* free mbufs untransmitted */
 	for (i = 0; i < AQ_TXD_NUM; i++) {
-		if (txring->ring_mbufs[i].m != NULL) {
-			m_freem(txring->ring_mbufs[i].m);
-			txring->ring_mbufs[i].m = NULL;
+		if (txring->txr_mbufs[i].m != NULL) {
+			m_freem(txring->txr_mbufs[i].m);
+			txring->txr_mbufs[i].m = NULL;
 		}
 	}
 
@@ -3783,7 +3789,7 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 
 	if (start) {
 		/* TX descriptor physical address */
-		paddr_t paddr = txring->ring_txdesc_dmamap->dm_segs[0].ds_addr;
+		paddr_t paddr = txring->txr_txdesc_dmamap->dm_segs[0].ds_addr;
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx), paddr);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRMSW_REG(ringidx), paddr >> 32);
 
@@ -3811,16 +3817,16 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 static void
 aq_txring_start(struct aq_softc *sc, struct aq_txring *txring)
 {
-//	printf("%s:%d: txring[%d] proidx = %d\n", __func__, __LINE__, txring->ring_index, txring->ring_prodidx);
+//	printf("%s:%d: txring[%d] proidx = %d\n", __func__, __LINE__, txring->txr_index, txring->txr_prodidx);
 
-	AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->ring_index),
-	    txring->ring_prodidx);
+	AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index),
+	    txring->txr_prodidx);
 }
 
 static int
 aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 {
-	const int ringidx = rxring->ring_index;
+	const int ringidx = rxring->rxr_index;
 	int i;
 	int error = 0;
 
@@ -3840,7 +3846,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		}
 
 		/* RX descriptor physical address */
-		paddr_t paddr = rxring->ring_rxdesc_dmamap->dm_segs[0].ds_addr;
+		paddr_t paddr = rxring->rxr_rxdesc_dmamap->dm_segs[0].ds_addr;
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx), paddr);
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRMSW_REG(ringidx), paddr >> 32);
 
@@ -3858,7 +3864,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 
 		/* reset TAIL pointer, and update readidx (HEAD pointer cannot write) */
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), AQ_RXD_NUM - 1);
-		rxring->ring_readidx = AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
+		rxring->rxr_readidx = AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
 
 		/* Rx ring set mode */
 
@@ -3892,8 +3898,8 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	uint32_t ctl1, ctl1_ctx, ctl2;
 	int idx, i, error;
 
-	idx = txring->ring_prodidx;
-	map = txring->ring_mbufs[idx].dmamap;
+	idx = txring->txr_prodidx;
+	map = txring->txr_mbufs[idx].dmamap;
 
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
 	    BUS_DMA_NOWAIT);
@@ -3909,7 +3915,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	 * check spaces of free descriptors.
 	 * +1 is reserved for context descriptor for vlan, etc,.
 	 */
-	if ((map->dm_nsegs + 1)  > txring->ring_nfree) {
+	if ((map->dm_nsegs + 1)  > txring->txr_nfree) {
 		bus_dmamap_unload(sc->sc_dmat, map);
 		device_printf(sc->sc_dev,
 		    "too many mbuf chain %d\n", map->dm_nsegs);
@@ -3926,7 +3932,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	if (vlan_has_tag(m)) {
 		ctl1 = AQ_TXDESC_CTL1_TYPE_TXC;
 #ifdef XXX_TXDESC_DEBUG
-		printf("TXring[%d].desc[%d] set VLANID %u\n", txring->ring_index, idx, vlan_get_tag(m));
+		printf("TXring[%d].desc[%d] set VLANID %u\n", txring->txr_index, idx, vlan_get_tag(m));
 #endif
 		ctl1 |= __SHIFTIN(vlan_get_tag(m), AQ_TXDESC_CTL1_VID);
 
@@ -3935,12 +3941,12 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 
 		/* fill context descriptor and forward index */
-		txring->ring_txdesc[idx].buf_addr = 0;
-		txring->ring_txdesc[idx].ctl1 = htole32(ctl1);
-		txring->ring_txdesc[idx].ctl2 = 0;
+		txring->txr_txdesc[idx].buf_addr = 0;
+		txring->txr_txdesc[idx].ctl1 = htole32(ctl1);
+		txring->txr_txdesc[idx].ctl2 = 0;
 
 		idx = TXRING_NEXTIDX(idx);
-		txring->ring_nfree--;
+		txring->txr_nfree--;
 	}
 
 	if (m->m_pkthdr.csum_flags & M_CSUM_IPv4)
@@ -3957,9 +3963,9 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 		if (i == 0) {
 			/* remember mbuf of these descriptors */
-			txring->ring_mbufs[idx].m = m;
+			txring->txr_mbufs[idx].m = m;
 		} else {
-			txring->ring_mbufs[idx].m = NULL;
+			txring->txr_mbufs[idx].m = NULL;
 		}
 
 		if (i == map->dm_nsegs - 1) {
@@ -3969,7 +3975,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 #ifdef XXX_TXDESC_DEBUG
 		printf("TXring[%d].desc[%d] seg:%d/%d buf_addr=%012lx, len=%-5lu ctl1=%08x ctl2=%08x%s\n",
-		    txring->ring_index,
+		    txring->txr_index,
 		    idx,
 		    i, map->dm_nsegs - 1,
 		    map->dm_segs[i].ds_addr,
@@ -3977,19 +3983,19 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 		    ctl1, ctl2,
 		    (i == map->dm_nsegs - 1) ? " EOP/WB" : "");
 #endif
-		txring->ring_txdesc[idx].buf_addr = htole64(map->dm_segs[i].ds_addr);
-		txring->ring_txdesc[idx].ctl1 = htole32(ctl1);
-		txring->ring_txdesc[idx].ctl2 = htole32(ctl2);
+		txring->txr_txdesc[idx].buf_addr = htole64(map->dm_segs[i].ds_addr);
+		txring->txr_txdesc[idx].ctl1 = htole32(ctl1);
+		txring->txr_txdesc[idx].ctl2 = htole32(ctl2);
 
-		bus_dmamap_sync(sc->sc_dmat, txring->ring_txdesc_dmamap,
+		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
 		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 
 		idx = TXRING_NEXTIDX(idx);
-		txring->ring_nfree--;
+		txring->txr_nfree--;
 	}
 
-	txring->ring_prodidx = idx;
+	txring->txr_prodidx = idx;
 
 	return 0;
 }
@@ -3998,9 +4004,9 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 static int
 aq_tx_intr_poll(struct aq_txring *txring)
 {
-	struct aq_softc *sc = txring->ring_sc;
+	struct aq_softc *sc = txring->txr_sc;
 
-	if (txring->ring_considx == AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR))
+	if (txring->txr_considx == AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR))
 		return 0;
 	return 1;
 }
@@ -4010,95 +4016,95 @@ static int
 aq_tx_intr(void *arg)
 {
 	struct aq_txring *txring = arg;
-	struct aq_softc *sc = txring->ring_sc;
+	struct aq_softc *sc = txring->txr_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
 	unsigned int idx, hw_head, n;
 
 	//XXX: need lock
 
-	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR);
-	if (hw_head == txring->ring_considx) {
+	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR);
+	if (hw_head == txring->txr_considx) {
 #ifdef XXX_TXINTR_DEBUG
-	printf("%s:%d: ringidx=%d, head/cons=%d/%d. NO NEED to collect mbufs\n", __func__, __LINE__, txring->ring_index, hw_head, txring->ring_considx);
+	printf("%s:%d: ringidx=%d, head/cons=%d/%d. NO NEED to collect mbufs\n", __func__, __LINE__, txring->txr_index, hw_head, txring->txr_considx);
 #endif
 		return 0;
 	}
 
-	mutex_enter(&txring->ring_mutex);
+	mutex_enter(&txring->txr_mutex);
 
 #ifdef XXX_TXINTR_DEBUG
-	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n", __func__, __LINE__, txring->ring_index,
-	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->ring_index)),
-	    txring->ring_prodidx,
-	    txring->ring_considx);
+	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n", __func__, __LINE__, txring->txr_index,
+	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
+	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)),
+	    txring->txr_prodidx,
+	    txring->txr_considx);
 #endif
 
-	for (idx = txring->ring_considx, n = 0; idx != hw_head;
+	for (idx = txring->txr_considx, n = 0; idx != hw_head;
 	    idx = TXRING_NEXTIDX(idx), n++) {
 
 #if 0
 		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u, considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
-		    txring->ring_index,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR),
-		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->ring_index)),
-		    txring->ring_considx,
-		    txring->ring_prodidx,
+		    txring->txr_index,
+		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
+		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)),
+		    txring->txr_considx,
+		    txring->txr_prodidx,
 		    idx);
 #endif
 
 #if 0
 		//DEBUG. show done txdesc
-		bus_dmamap_sync(sc->sc_dmat, txring->ring_txdesc_dmamap,
+		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
 		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
 		printf("%s:%d: written txdesc[%3d] buf_addr=%012lx, ctl=%08x ctl2=%08x\n", __func__, __LINE__,
 		    idx,
-		    txring->ring_txdesc[idx].buf_addr,
-		    txring->ring_txdesc[idx].ctl,
-		    txring->ring_txdesc[idx].ctl2);
+		    txring->txr_txdesc[idx].buf_addr,
+		    txring->txr_txdesc[idx].ctl,
+		    txring->txr_txdesc[idx].ctl2);
 #endif
 
 #if 0
 		//DEBUG? clear done txdesc
-		txring->ring_txdesc[idx].buf_addr = 0;
-		txring->ring_txdesc[idx].ctl = AQ_TXDESC_CTL1_DD;
-		txring->ring_txdesc[idx].ctl2 = 0;
-		bus_dmamap_sync(sc->sc_dmat, txring->ring_txdesc_dmamap,
+		txring->txr_txdesc[idx].buf_addr = 0;
+		txring->txr_txdesc[idx].ctl = AQ_TXDESC_CTL1_DD;
+		txring->txr_txdesc[idx].ctl2 = 0;
+		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
 		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
 		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
 #endif
 
-		if (txring->ring_mbufs[idx].m != NULL) {
-			bus_dmamap_unload(sc->sc_dmat, txring->ring_mbufs[idx].dmamap);
-			m_freem(txring->ring_mbufs[idx].m);
-			txring->ring_mbufs[idx].m = NULL;
+		if (txring->txr_mbufs[idx].m != NULL) {
+			bus_dmamap_unload(sc->sc_dmat, txring->txr_mbufs[idx].dmamap);
+			m_freem(txring->txr_mbufs[idx].m);
+			txring->txr_mbufs[idx].m = NULL;
 			ifp->if_opackets++;
 		}
 
-		txring->ring_nfree++;
+		txring->txr_nfree++;
 	}
-	txring->ring_considx = idx;
+	txring->txr_considx = idx;
 
-	if (txring->ring_nfree > 0)
+	if (txring->txr_nfree > 0)
 		ifp->if_flags &= ~IFF_OACTIVE;
 
 	/*
 	 * no more pending TX packet? cancel watchdog.
 	 * XXX: consider multi tx rings...
 	 */
-	if (txring->ring_nfree >= AQ_TXD_NUM) {
+	if (txring->txr_nfree >= AQ_TXD_NUM) {
 		ifp->if_timer = 0;
 
 #if 0 /* force reset TXRING */
 		//XXX reset txring
-		txring->ring_prodidx = 0;
-		txring->ring_considx = 0;
-		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->ring_index), 0);
+		txring->txr_prodidx = 0;
+		txring->txr_considx = 0;
+		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index), 0);
 #endif
 	}
 
-	mutex_exit(&txring->ring_mutex);
+	mutex_exit(&txring->txr_mutex);
 
 	return n;
 }
@@ -4107,9 +4113,9 @@ aq_tx_intr(void *arg)
 static int
 aq_rx_intr_poll(struct aq_rxring *rxring)
 {
-	struct aq_softc *sc = rxring->ring_sc;
+	struct aq_softc *sc = rxring->rxr_sc;
 
-	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(rxring->ring_index), RX_DMA_DESC_HEAD_PTR))
+	if (rxring->rxr_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(rxring->rxr_index), RX_DMA_DESC_HEAD_PTR))
 		return 0;
 	return 1;
 }
@@ -4119,26 +4125,26 @@ static int
 aq_rx_intr(void *arg)
 {
 	struct aq_rxring *rxring = arg;
-	struct aq_softc *sc = rxring->ring_sc;
+	struct aq_softc *sc = rxring->rxr_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	const int ringidx = rxring->ring_index;
+	const int ringidx = rxring->rxr_index;
 	aq_rx_desc_t *rxd;
 	struct mbuf *m, *m0, *mprev;
 	uint32_t rxd_type, rxd_hash __unused;
 	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr __unused, rxd_vlan __unused;
 	unsigned int idx, n;
 
-	if (rxring->ring_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR)) {
+	if (rxring->rxr_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR)) {
 #ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: stray interrupt?: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
-	    rxring->ring_readidx,
+	    rxring->rxr_readidx,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 		return 0;
 	}
 
-	mutex_enter(&rxring->ring_mutex);
+	mutex_enter(&rxring->rxr_mutex);
 
 #ifdef XXX_RXINTR_DEBUG
 	printf("# %s:%d\n", __func__, __LINE__);
@@ -4153,7 +4159,7 @@ aq_rx_intr(void *arg)
 
 #ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: begin: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
-	    rxring->ring_readidx,
+	    rxring->rxr_readidx,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
@@ -4162,15 +4168,15 @@ aq_rx_intr(void *arg)
 	bool _eop = false;
 #endif
 	m0 = mprev = NULL;
-	for (idx = rxring->ring_readidx, n = 0;
+	for (idx = rxring->rxr_readidx, n = 0;
 	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
 	    idx = RXRING_NEXTIDX(idx), n++) {
 
-		bus_dmamap_sync(sc->sc_dmat, rxring->ring_rxdesc_dmamap,
+		bus_dmamap_sync(sc->sc_dmat, rxring->rxr_rxdesc_dmamap,
 		    sizeof(aq_rx_desc_t) * idx, sizeof(aq_rx_desc_t),
 		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
 
-		rxd = &rxring->ring_rxdesc[idx];
+		rxd = &rxring->rxr_rxdesc[idx];
 		rxd_status = le16toh(rxd->wb.status);
 
 		if ((rxd_status & RXDESC_STATUS_DD) == 0)
@@ -4345,11 +4351,11 @@ aq_rx_intr(void *arg)
 
 
 
-		bus_dmamap_sync(sc->sc_dmat, rxring->ring_mbufs[idx].dmamap, 0,
-		    rxring->ring_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
+		bus_dmamap_sync(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap, 0,
+		    rxring->rxr_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
 
-		m = rxring->ring_mbufs[idx].m;
-		rxring->ring_mbufs[idx].m = NULL;
+		m = rxring->rxr_mbufs[idx].m;
+		rxring->rxr_mbufs[idx].m = NULL;
 
 		if (m0 == NULL) {
 			m0 = m;
@@ -4436,21 +4442,21 @@ aq_rx_intr(void *arg)
  rx_next:
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), idx);
 	}
-	rxring->ring_readidx = idx;
+	rxring->rxr_readidx = idx;
 
 #ifdef XXX_RXDESC_EOP_CHECK
 	if (!_eop)
-		printf("RXring[%d]: no EOP flag exists\n", rxring->ring_index);
+		printf("RXring[%d]: no EOP flag exists\n", rxring->rxr_index);
 #endif
 
 #ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: end: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
-	    rxring->ring_readidx,
+	    rxring->rxr_readidx,
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
-	mutex_exit(&rxring->ring_mutex);
+	mutex_exit(&rxring->rxr_mutex);
 	return n;
 }
 
@@ -4535,7 +4541,11 @@ aq_init(struct ifnet *ifp)
 	aq_enable_intr(sc, true, true);
 
 	/* need to start callout? */
-	if (sc->sc_poll_linkstat || sc->sc_statistics_available) {
+	if (sc->sc_poll_linkstat
+#ifdef AQ_EVENT_COUNTERS
+	    || sc->sc_poll_statistics
+#endif
+	    ) {
 		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
 	}
 
@@ -4566,20 +4576,20 @@ aq_start(struct ifnet *ifp)
 
 #ifdef XXX_TXDESC_DEBUG
 	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/INTR_STATUS=%08x/%08x\n",
-	    __func__, __LINE__, txring->ring_index,
-	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->ring_index)),
+	    __func__, __LINE__, txring->txr_index,
+	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
+	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)),
 	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 #endif
 
-	mutex_enter(&txring->ring_mutex);
+	mutex_enter(&txring->txr_mutex);
 
 	for (npkt = 0; ; npkt++) {
 		IFQ_POLL(&ifp->if_snd, m);
 		if (m == NULL)
 			break;
 
-		if (txring->ring_nfree <= 0) {
+		if (txring->txr_nfree <= 0) {
 			/* no tx descriptor now... */
 			ifp->if_flags |= IFF_OACTIVE;
 			device_printf(sc->sc_dev, "TX descriptor is full\n");
@@ -4604,12 +4614,12 @@ aq_start(struct ifnet *ifp)
 		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
 
-	mutex_exit(&txring->ring_mutex);
+	mutex_exit(&txring->txr_mutex);
 
 	if (npkt)
 		ifp->if_timer = 5;
 
-//	device_printf(sc->sc_dev, "ring[%d] %d/%d\n", txring->ring_index, AQ_TXD_NUM - txring->ring_nfree, AQ_TXD_NUM);
+//	device_printf(sc->sc_dev, "ring[%d] %d/%d\n", txring->txr_index, AQ_TXD_NUM - txring->txr_nfree, AQ_TXD_NUM);
 }
 
 static void
@@ -4665,9 +4675,9 @@ aq_watchdog(struct ifnet *ifp)
 
 #if 1
 		//DEBUG
-		printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u\n", __func__, __LINE__, txring->ring_index,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->ring_index), TX_DMA_DESC_HEAD_PTR),
-		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->ring_index)));
+		printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u\n", __func__, __LINE__, txring->txr_index,
+		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
+		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)));
 #endif
 
 		aq_tx_intr(txring);
