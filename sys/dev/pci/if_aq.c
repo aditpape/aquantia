@@ -8,16 +8,13 @@
 //#define XXX_INTR_DEBUG
 //#define XXX_RXINTR_DEBUG
 //#define XXX_RXDESC_DEBUG
-//#define XXX_RXDESC_EOP_CHECK
 //#define XXX_RXRSS_DEBUG
 //#define XXX_DUMP_RX_MBUF
 //#define XXX_TXDESC_DEBUG
 //#define XXX_TXINTR_DEBUG
-//#define XXX_DUMP_RX_COUNTER
 //#define XXX_DUMP_MACTABLE
 //#define XXX_DUMP_RING
 //#define XXX_DUMP_RSSKEY
-//#define XXX_DEBUG_RSSKEY_ZERO
 
 /*	$NetBSD$	*/
 
@@ -86,7 +83,6 @@
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #ifdef _KERNEL_OPT
-#include "opt_net_mpsafe.h"
 #include "opt_if_aq.h"
 #endif
 
@@ -134,8 +130,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
 					/* TX + RX + LINK. must be <= 32 */
+#if 1
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
+#else
+/* stress debug */
+#define AQ_TXD_NUM			8	/* per ring. 8*n && <= 8184 */
+#define AQ_RXD_NUM			8	/* per ring. 8*n && <= 8184 */
+#endif
 
 /* hardware specification */
 #define AQ_RINGS_NUM			32
@@ -299,6 +301,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_VLAN_TPID_INNER			__BITS(15,0)
 
 /* RPF_VLAN_FILTER_REG[16] 0x5290-0x52d0 */
+#define RPF_VLAN_MAX_FILTERS			16
 #define RPF_VLAN_FILTER_REG(i)			(0x5290 + (i) * 4)
 #define  RPF_VLAN_FILTER_EN			__BIT(31)
 #define  RPF_VLAN_FILTER_RXQ_EN			__BIT(28)
@@ -913,6 +916,9 @@ struct aq_firmware_ops {
 	((sc)->sc_evcount_##name##_ev.ev_count += (val))
 #endif /* AQ_EVENT_COUNTERS */
 
+#define AQ_LOCK(sc)		mutex_enter(&(sc)->sc_mutex);
+#define AQ_UNLOCK(sc)		mutex_exit(&(sc)->sc_mutex);
+
 struct aq_softc {
 	device_t sc_dev;
 
@@ -1033,7 +1039,6 @@ static int aq_txrx_rings_alloc(struct aq_softc *);
 static void aq_txrx_rings_free(struct aq_softc *);
 
 static void aq_initmedia(struct aq_softc *);
-static int aq_mediachange(struct ifnet *);
 static void aq_enable_intr(struct aq_softc *, bool, bool);
 
 static void aq_tick(void *);
@@ -1042,10 +1047,6 @@ static int aq_link_intr(void *);
 static int aq_txrx_intr(void *);
 static int aq_tx_intr(void *);
 static int aq_rx_intr(void *);
-#ifdef XXX_INTR_DEBUG
-static int aq_tx_intr_poll(struct aq_txring *);
-static int aq_rx_intr_poll(struct aq_rxring *);
-#endif
 
 static int aq_set_linkmode(struct aq_softc *, aq_link_speed_t, aq_link_fc_t, aq_link_eee_t);
 static int aq_get_linkmode(struct aq_softc *, aq_link_speed_t *, aq_link_fc_t *, aq_link_eee_t *);
@@ -1295,7 +1296,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	if (error != 0)
 		return;
 
-	callout_init(&sc->sc_tick_ch, 0);	/* XXX: CALLOUT_MPSAFE */
+	callout_init(&sc->sc_tick_ch, 0);
 
 #ifdef XXX_FORCE_POLL_LINKSTAT
 	sc->sc_poll_linkstat = true;
@@ -1364,7 +1365,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_ethercom.ec_capabilities = 0;
 	sc->sc_ethercom.ec_capenable = 0;
 #if notyet
-	// XXX: NOTYET
+	/* TODO */
 	sc->sc_ethercom.ec_capabilities |= ETHERCAP_EEE;
 	sc->sc_ethercom.ec_capabilities |= ETHERCAP_VLAN_HWFILTER;
 #endif
@@ -1412,8 +1413,8 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	aq_enable_intr(sc, true, false);	/* only intr about link */
 
-	/* media update */
-	aq_mediachange(ifp);
+	/* update media */
+	aq_ifmedia_change(ifp);
 
 #ifdef AQ_EVENT_COUNTERS
 	/* get starting statistics values */
@@ -1928,7 +1929,7 @@ aq_fw_reset(struct aq_softc *sc)
 	}
 
 	/*
-	 * XXX: todo: Host Boot
+	 * XXX: TODO: add support Host Boot
 	 */
 	aprint_error_dev(sc->sc_dev,
 	    "RBL> F/W Host Bootload not implemented\n");
@@ -2222,7 +2223,7 @@ fw2x_get_mode(struct aq_softc *sc, aq_hw_fw_mpi_state_e_t *mode,
 	if (fcp != NULL)
 		*fcp = fc;
 
-	//XXX: TODO: EEE
+	/* XXX: TODO: EEE */
 	if (eeep != NULL)
 		*eeep = 0;
 
@@ -2428,9 +2429,6 @@ aq_set_capability(struct aq_softc *sc)
 	uint32_t lro = ((ifp->if_capenable & IFCAP_LRO) == 0) ? 0 : 0xffffffff;
 	uint32_t i, v;
 
-	printf("%s:%d: IPV4csum_tx=%d, IPV4csum_rx=%d, L4csum_tx=%d, L4csum_rx=%d, lso=%x, lro=%x\n", __func__, __LINE__,
-	    ipv4csum_tx, ipv4csum_rx, l4csum_tx, l4csum_rx, lso, lro);
-
 	/* TX checksums offloads*/
 	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_IPV4CSUM_EN, ipv4csum_tx);
 	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_L4CSUM_EN, l4csum_tx);
@@ -2544,7 +2542,8 @@ aq_mediastatus_update(struct aq_softc *sc)
 
 	switch (sc->sc_link_rate) {
 	case AQ_LINK_100M:
-		sc->sc_media_active |= IFM_100_TX | IFM_FDX;	// XXX: or HD?
+		/* XXX: need to detect fulldup or halfdup */
+		sc->sc_media_active |= IFM_100_TX | IFM_FDX;
 		break;
 	case AQ_LINK_1G:
 		sc->sc_media_active |= IFM_1000_T | IFM_FDX;
@@ -2564,22 +2563,8 @@ aq_mediastatus_update(struct aq_softc *sc)
 	}
 }
 
-static void
-aq_mediastatus(struct ifnet *ifp, struct ifmediareq *ifmr)
-{
-	struct aq_softc *sc = ifp->if_softc;
-
-	ifmr->ifm_active = IFM_ETHER;
-	ifmr->ifm_status = IFM_AVALID;
-
-	if (sc->sc_link_rate != AQ_LINK_NONE)
-		ifmr->ifm_status |= IFM_ACTIVE;
-
-	ifmr->ifm_active |= sc->sc_media_active;
-}
-
 static int
-aq_mediachange(struct ifnet *ifp)
+aq_ifmedia_change(struct ifnet * const ifp)
 {
 	struct aq_softc *sc = ifp->if_softc;
 	aq_link_speed_t rate = AQ_LINK_NONE;
@@ -2625,6 +2610,20 @@ aq_mediachange(struct ifnet *ifp)
 	aq_set_linkmode(sc, rate, fc, eee);
 
 	return 0;
+}
+
+static void
+aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *ifmr)
+{
+	struct aq_softc *sc = ifp->if_softc;
+
+	ifmr->ifm_active = IFM_ETHER;
+	ifmr->ifm_status = IFM_AVALID;
+
+	if (sc->sc_link_rate != AQ_LINK_NONE)
+		ifmr->ifm_status |= IFM_ACTIVE;
+
+	ifmr->ifm_active |= sc->sc_media_active;
 }
 
 static void
@@ -2769,8 +2768,8 @@ aq_hw_init_rx_path(struct aq_softc *sc)
 
 	/*
 	 * XXX: RX_TCP_RSS_HASH_REG:
-	 *  linux  :0x000f0000
-	 *  freebsd:0x000f001e
+	 *  linux   set 0x000f0000
+	 *  freebsd set 0x000f001e
 	 */
 	/* RSS hash type set for IP/TCP */
 	AQ_WRITE_REG_BIT(sc, RX_TCP_RSS_HASH_REG,
@@ -2916,9 +2915,6 @@ aq_init_rss(struct aq_softc *sc)
 
 	/* initialize rss key */
 	rss_getkey((uint8_t *)rss_key);
-#ifdef XXX_DEBUG_RSSKEY_ZERO
-	memset(rss_key, 0, sizeof(rss_key));
-#endif
 
 	/* hash to ring table */
 	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
@@ -2970,13 +2966,13 @@ aq_init_rss(struct aq_softc *sc)
 	/*
 	 * set rss indirection table
 	 *
-	 * AQ's rss redirect table requires  3bit*64 (192bit) packed array.
+	 * AQ's rss redirect table is consist of 3bit*64 (192bit) packed array.
 	 * we'll make it by __BITMAP(3) macros.
 	 */
 	__BITMAP_TYPE(, uint16_t, 3 * AQ_RSS_INDIRECTION_TABLE_MAX) bit3x64;
 	__BITMAP_ZERO(&bit3x64);
 
-#define __3BIT_PACKED_ARRAY_SET(bitmap, idx, val)		\
+#define AQ_3BIT_PACKED_ARRAY_SET(bitmap, idx, val)		\
 	do {							\
 		if (val & 1) {					\
 			__BITMAP_SET((idx) * 3, (bitmap));	\
@@ -2996,7 +2992,7 @@ aq_init_rss(struct aq_softc *sc)
 	} while (0 /* CONSTCOND */)
 
 	for (i = 0; i < AQ_RSS_INDIRECTION_TABLE_MAX; i++) {
-		__3BIT_PACKED_ARRAY_SET(&bit3x64, i, rss_table[i]);
+		AQ_3BIT_PACKED_ARRAY_SET(&bit3x64, i, rss_table[i]);
 	}
 
 	/* write 192bit data in steps of 16bit */
@@ -3051,63 +3047,17 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 	}
 }
 
-struct aq_rx_filter_vlan {
-	uint8_t enable;
-	uint8_t location;
-	uint16_t vlan_id;
-	uint8_t queue;
-};
-
 static void
 aq_update_vlan_filters(struct aq_softc *sc)
 {
-#define VLAN_MAX_FILTERS		16
-//	struct aq_rx_filter_vlan aq_vlans[AQ_HW_VLAN_MAX_FILTERS];
-//	int bit_pos = 0;
-//	int vlan_tag = -1;
+	/* XXX: notyet. vlan always promisc */
 	int i;
 
-	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_PROMISC, 1);
-#if 0
-XXX: notyet
-	for (i = 0; i < AQ_HW_VLAN_MAX_FILTERS; i++) {
-		bit_ffs_at(softc->vlan_tags, bit_pos, 4096, &vlan_tag);
-		if (vlan_tag != -1) {
-			aq_vlans[i].enable = true;
-			aq_vlans[i].location = i;
-			aq_vlans[i].queue = 0xFF;
-			aq_vlans[i].vlan_id = vlan_tag;
-			bit_pos = vlan_tag;
-		} else {
-			aq_vlans[i].enable = false;
-		}
-	}
-#endif
-
-	for (i = 0; i < VLAN_MAX_FILTERS; i++) {
+	for (i = 0; i < RPF_VLAN_MAX_FILTERS; i++) {
 		AQ_WRITE_REG_BIT(sc, RPF_VLAN_FILTER_REG(i), RPF_VLAN_FILTER_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RPF_VLAN_FILTER_REG(i), RPF_VLAN_FILTER_RXQ_EN, 0);
-
-#if 0
-XXX: notyet
-		if (aq_vlans[i].enable) {
-			hw_atl_rpf_vlan_id_flr_set(self,
-						   aq_vlans[i].vlan_id,
-						   i);
-			hw_atl_rpf_vlan_flr_act_set(self, 1U, i);
-			hw_atl_rpf_vlan_flr_en_set(self, 1U, i);
-			if (aq_vlans[i].queue != 0xFF) {
-				hw_atl_rpf_vlan_rxq_flr_set(self,
-							    aq_vlans[i].queue,
-							    i);
-				hw_atl_rpf_vlan_rxq_en_flr_set(self, 1U, i);
-			}
-		}
-#endif
 	}
-
-//	hw_atl_b0_hw_vlan_promisc_set(hw, aq_is_vlan_promisc_required(softc));
-
+	AQ_WRITE_REG_BIT(sc, RPF_VLAN_MODE_REG, RPF_VLAN_MODE_PROMISC, 1);
 }
 
 static int
@@ -3369,7 +3319,6 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 		paddr_t pa;
 		vaddr_t va;
 
-
 		printf("TX desc size = %lu\n", txring->txr_txdesc_size);
 		printf("TX desc DM_SEGS[0] = PA=%08lx\n", txring->txr_txdesc_dmamap->dm_segs[0].ds_addr);
 
@@ -3387,7 +3336,7 @@ aq_txring_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	for (i = 0; i < AQ_TXD_NUM; i++) {
 #define AQ_MAXDMASIZE	(16 * 1024)
 #define AQ_NTXSEGS	32
-		//XXX: todo: error check
+		/* XXX: TODO: error check */
 		bus_dmamap_create(sc->sc_dmat, AQ_MAXDMASIZE, AQ_NTXSEGS,
 		    AQ_MAXDMASIZE, 0, 0,
 		    &txring->txr_mbufs[i].dmamap);
@@ -3451,7 +3400,7 @@ aq_rxring_alloc(struct aq_softc *sc, struct aq_rxring *rxring)
 	/* fill rxring with dmamaps */
 	for (i = 0; i < AQ_RXD_NUM; i++) {
 		rxring->rxr_mbufs[i].m = NULL;
-		//XXX: todo: error check
+		/* XXX: TODO: error check */
 		bus_dmamap_create(sc->sc_dmat, MCLBYTES, 1,
 		    MCLBYTES, 0, 0,
 		    &rxring->rxr_mbufs[i].dmamap);
@@ -3532,7 +3481,7 @@ aq_rxring_add(struct aq_softc *sc, struct aq_rxring *rxring, int idx)
 
 	m->m_len = m->m_pkthdr.len = m->m_ext.ext_size;
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap,
-	    m, BUS_DMA_NOWAIT);
+	    m, BUS_DMA_READ | BUS_DMA_NOWAIT);
 	if (error) {
 		device_printf(sc->sc_dev,
 		    "unable to load rx DMA map %d, error = %d\n", idx, error);
@@ -3677,8 +3626,6 @@ aq_enable_intr(struct aq_softc *sc, bool link, bool txrx)
 
 	AQ_WRITE_REG(sc, AQ_INTR_MASK_REG, imask);
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);
-
-	printf("%s:%d: INTR_MASK/INTR_STATUS=%08x/%08x\n", __func__, __LINE__, AQ_READ_REG(sc, AQ_INTR_MASK_REG), AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 }
 
 static int
@@ -3690,9 +3637,8 @@ aq_legacy_intr(void *arg)
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
 #ifdef XXX_INTR_DEBUG
-	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
-	(void)aq_tx_intr_poll;
-	(void)aq_rx_intr_poll;
+	printf("%s: INTR_MASK/STATUS = %08x/%08x\n",
+	    __func__, AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
 #endif
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);
 
@@ -3733,15 +3679,14 @@ aq_txrx_intr(void *arg)
 	}
 
 #ifdef XXX_INTR_DEBUG
-	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x (tx,rx ringindex=%d,%d)\n", __func__, cpu_index(curcpu()),
-	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG),
-	    txringidx, rxringidx);
+	printf("%s@cpu%d: ringidx=%d: INTR_MASK/STATUS = %08x/%08x\n",
+	    __func__, cpu_index(curcpu()), txringidx,
+	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
 #endif
 
 	nintr += aq_rx_intr(rxring);
 	nintr += aq_tx_intr(txring);
 
-	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(txirq) | __BIT(rxirq));
 	return nintr;
 }
 
@@ -3754,8 +3699,9 @@ aq_link_intr(void *arg)
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
 #ifdef XXX_INTR_DEBUG
-	printf("#### INTERRUPT #### %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()),
-	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
+	printf("%s@cpu%d: INTR_MASK/STATUS = %08x/%08\n",
+	    __func__, cpu_index(curcpu()),
+	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
 #endif
 
 	if (status & __BIT(sc->sc_linkstat_irq)) {
@@ -3797,8 +3743,9 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_REG(ringidx), TX_DMA_DESC_LEN,
 		    AQ_TXD_NUM / 8);
 
-		/* reset TAIL pointer */
-		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx), 0);
+		/* reload TAIL pointer */
+		txring->txr_prodidx = txring->txr_considx =
+		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx));
 		AQ_WRITE_REG(sc, TX_DMA_DESC_WRWB_THRESH_REG(ringidx), 0);
 
 		/* Mapping interrupt vector */
@@ -3808,19 +3755,10 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 		/* enable DMA */
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_REG(ringidx), TX_DMA_DESC_EN, 1);
 
-		const int cpuid = 0;	//XXX
+		const int cpuid = 0;	/* XXX? */
 		AQ_WRITE_REG_BIT(sc, TDM_DCAD_REG(ringidx), TDM_DCAD_CPUID, cpuid);
 		AQ_WRITE_REG_BIT(sc, TDM_DCAD_REG(ringidx), TDM_DCAD_CPUID_EN, 0);
 	}
-}
-
-static void
-aq_txring_start(struct aq_softc *sc, struct aq_txring *txring)
-{
-//	printf("%s:%d: txring[%d] proidx = %d\n", __func__, __LINE__, txring->txr_index, txring->txr_prodidx);
-
-	AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index),
-	    txring->txr_prodidx);
 }
 
 static int
@@ -3872,7 +3810,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_RX_REG(ringidx), AQ_INTR_IRQ_MAP_RX_IRQMAP(ringidx), sc->sc_rx_irq[ringidx]);
 		AQ_WRITE_REG_BIT(sc, AQ_INTR_IRQ_MAP_RX_REG(ringidx), AQ_INTR_IRQ_MAP_RX_EN(ringidx), 1);
 
-		const int cpuid = 0;	//XXX
+		const int cpuid = 0;	/* XXX? */
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DCAD_REG(ringidx), RX_DMA_DCAD_CPUID, cpuid);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DCAD_REG(ringidx), RX_DMA_DCAD_DESC_EN, 0);
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DCAD_REG(ringidx), RX_DMA_DCAD_HEADER_EN, 0);
@@ -3894,7 +3832,7 @@ static int
 aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 {
 	bus_dmamap_t map;
-	struct mbuf * const m = *mp;
+	struct mbuf *m = *mp;
 	uint32_t ctl1, ctl1_ctx, ctl2;
 	int idx, i, error;
 
@@ -3902,9 +3840,18 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	map = txring->txr_mbufs[idx].dmamap;
 
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
-	    BUS_DMA_NOWAIT);
+	    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
+	if (error == EFBIG) {
+		m = m_defrag(m, M_DONTWAIT);
+		if (m != NULL) {
+			*mp = m;
+			error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
+			    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
+		}
+	}
+
+
 	if (error != 0) {
-		/* XXX: TODO: try to m_defrag */
 		device_printf(sc->sc_dev,
 		    "Error mapping mbuf into TX chain: error=%d\n", error);
 		m_freem(m);
@@ -3923,8 +3870,9 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 		return ENOBUFS;
 	}
 
+	/* sync dma for mbuf */
 	bus_dmamap_sync(sc->sc_dmat, map, 0, map->dm_mapsize,
-	    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
+	    BUS_DMASYNC_PREWRITE);
 
 	ctl1_ctx = 0;
 	ctl2 = __SHIFTIN(m->m_pkthdr.len, AQ_TXDESC_CTL2_LEN);
@@ -4000,54 +3948,41 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	return 0;
 }
 
-#ifdef XXX_INTR_DEBUG
-static int
-aq_tx_intr_poll(struct aq_txring *txring)
-{
-	struct aq_softc *sc = txring->txr_sc;
-
-	if (txring->txr_considx == AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR))
-		return 0;
-	return 1;
-}
-#endif
-
 static int
 aq_tx_intr(void *arg)
 {
 	struct aq_txring *txring = arg;
 	struct aq_softc *sc = txring->txr_sc;
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	unsigned int idx, hw_head, n;
-
-	//XXX: need lock
-
-	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR);
-	if (hw_head == txring->txr_considx) {
-#ifdef XXX_TXINTR_DEBUG
-	printf("%s:%d: ringidx=%d, head/cons=%d/%d. NO NEED to collect mbufs\n", __func__, __LINE__, txring->txr_index, hw_head, txring->txr_considx);
-#endif
-		return 0;
-	}
+	const int ringidx = txring->txr_index;
+	unsigned int idx, hw_head, n = 0;
 
 	mutex_enter(&txring->txr_mutex);
 
+	hw_head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx), TX_DMA_DESC_HEAD_PTR);
+	if (hw_head == txring->txr_considx) {
 #ifdef XXX_TXINTR_DEBUG
-	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n", __func__, __LINE__, txring->txr_index,
-	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
-	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)),
+		printf("%s:%d: ringidx=%d, head/cons=%d/%d. NO NEED to collect mbufs\n", __func__, __LINE__, ringidx, hw_head, txring->txr_considx);
+#endif
+		goto tx_intr_done;
+	}
+
+#ifdef XXX_TXINTR_DEBUG
+	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u prod/cons=%d/%d\n", __func__, __LINE__, ringidx,
+	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx), TX_DMA_DESC_HEAD_PTR),
+	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx)),
 	    txring->txr_prodidx,
 	    txring->txr_considx);
 #endif
 
-	for (idx = txring->txr_considx, n = 0; idx != hw_head;
+	for (idx = txring->txr_considx; idx != hw_head;
 	    idx = TXRING_NEXTIDX(idx), n++) {
 
 #if 0
 		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u, considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
-		    txring->txr_index,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
-		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)),
+		    ringidx,
+		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx), TX_DMA_DESC_HEAD_PTR),
+		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx)),
 		    txring->txr_considx,
 		    txring->txr_prodidx,
 		    idx);
@@ -4089,37 +4024,16 @@ aq_tx_intr(void *arg)
 	if (txring->txr_nfree > 0)
 		ifp->if_flags &= ~IFF_OACTIVE;
 
-	/*
-	 * no more pending TX packet? cancel watchdog.
-	 * XXX: consider multi tx rings...
-	 */
-	if (txring->txr_nfree >= AQ_TXD_NUM) {
+	/* no more pending TX packet, cancel watchdog */
+	if (txring->txr_nfree >= AQ_TXD_NUM)
 		ifp->if_timer = 0;
 
-#if 0 /* force reset TXRING */
-		//XXX reset txring
-		txring->txr_prodidx = 0;
-		txring->txr_considx = 0;
-		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index), 0);
-#endif
-	}
-
+ tx_intr_done:
 	mutex_exit(&txring->txr_mutex);
 
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(sc->sc_tx_irq[ringidx]));
 	return n;
 }
-
-#ifdef XXX_INTR_DEBUG
-static int
-aq_rx_intr_poll(struct aq_rxring *rxring)
-{
-	struct aq_softc *sc = rxring->rxr_sc;
-
-	if (rxring->rxr_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(rxring->rxr_index), RX_DMA_DESC_HEAD_PTR))
-		return 0;
-	return 1;
-}
-#endif
 
 static int
 aq_rx_intr(void *arg)
@@ -4132,7 +4046,9 @@ aq_rx_intr(void *arg)
 	struct mbuf *m, *m0, *mprev;
 	uint32_t rxd_type, rxd_hash __unused;
 	uint16_t rxd_status, rxd_pktlen, rxd_nextdescptr __unused, rxd_vlan __unused;
-	unsigned int idx, n;
+	unsigned int idx, n = 0;
+
+	mutex_enter(&rxring->rxr_mutex);
 
 	if (rxring->rxr_readidx == AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR)) {
 #ifdef XXX_RXINTR_DEBUG
@@ -4141,20 +4057,11 @@ aq_rx_intr(void *arg)
 	    AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
-		return 0;
+		goto rx_intr_done;
 	}
-
-	mutex_enter(&rxring->rxr_mutex);
 
 #ifdef XXX_RXINTR_DEBUG
 	printf("# %s:%d\n", __func__, __LINE__);
-#endif
-
-#ifdef XXX_DUMP_RX_COUNTER
-	printf("RXPKT:%lu, RXBYTE:%lu, DMADROP:%u\n",
-	    AQ_READ64_REG(sc, RX_DMA_GOOD_PKT_COUNTERLSW),
-	    AQ_READ64_REG(sc, RX_DMA_GOOD_OCTET_COUNTERLSW),
-	    AQ_READ_REG(sc, RX_DMA_DROP_PKT_CNT_REG));
 #endif
 
 #ifdef XXX_RXINTR_DEBUG
@@ -4164,11 +4071,8 @@ aq_rx_intr(void *arg)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
-#ifdef XXX_RXDESC_EOP_CHECK
-	bool _eop = false;
-#endif
 	m0 = mprev = NULL;
-	for (idx = rxring->rxr_readidx, n = 0;
+	for (idx = rxring->rxr_readidx;
 	    idx != AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
 	    idx = RXRING_NEXTIDX(idx), n++) {
 
@@ -4190,10 +4094,12 @@ aq_rx_intr(void *arg)
 
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
-			//XXX
-			printf("DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
+			/* XXX */
+			device_printf(sc->sc_dev,
+			    "DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x, status=0x%08x, pktlen=%u, nextdesc=%u, vlan=0x%x\n",
 			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen, rxd_nextdescptr, rxd_vlan);
-			printf("DMA_ERR: type: rsstype=0x%lx, rdm=%ld, ipv4checked=%ld, tcpudpchecked=%ld, sph=%ld, hdrlen=%ld\n",
+			device_printf(sc->sc_dev,
+			    "DMA_ERR: type: rsstype=0x%lx, rdm=%ld, ipv4checked=%ld, tcpudpchecked=%ld, sph=%ld, hdrlen=%ld\n",
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_MAC_DMA_ERR),
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
@@ -4349,8 +4255,6 @@ aq_rx_intr(void *arg)
 		}
 #endif
 
-
-
 		bus_dmamap_sync(sc->sc_dmat, rxring->rxr_mbufs[idx].dmamap, 0,
 		    rxring->rxr_mbufs[idx].dmamap->dm_mapsize, BUS_DMASYNC_POSTREAD);
 
@@ -4375,11 +4279,9 @@ aq_rx_intr(void *arg)
 			/* last buffer */
 			m->m_len = rxd_pktlen % MCLBYTES;
 			m0->m_pkthdr.len = rxd_pktlen;
-
 #ifdef XXX_DUMP_RX_MBUF
 			hexdump(printf, "mbuf (EOP)", m->m_data, m->m_len);
 #endif
-
 			/* VLAN offloading */
 			if ((sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_HWTAGGING) &&
 			    (__SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN) ||
@@ -4397,7 +4299,10 @@ aq_rx_intr(void *arg)
 					m0->m_pkthdr.csum_flags |= M_CSUM_IPv4_BAD;
 			}
 #if notyet
-			//XXX: NIC always marks BAD for fragmented packet? need to care.
+			/*
+			 * XXX: aq always marks BAD for fragmented packet...
+			 * we should peek L3 header, and ignore cksum flags if the packet is fragmented...
+			 */
 			if (__SHIFTOUT(rxd_type, RXDESC_TYPE_TCPUDP_CSUM_CHECKED)) {
 				bool checked = false;
 				unsigned int pkttype_proto = __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_PROTO);
@@ -4433,21 +4338,12 @@ aq_rx_intr(void *arg)
 			m0 = mprev = NULL;
 		}
 
-#ifdef XXX_RXDESC_EOP_CHECK
-		_eop = (rxd_status & RXDESC_STATUS_EOP) ? true : false;
-#endif
-
 		/* refill, and update tail */
 		aq_rxring_add(sc, rxring, idx);
  rx_next:
 		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), idx);
 	}
 	rxring->rxr_readidx = idx;
-
-#ifdef XXX_RXDESC_EOP_CHECK
-	if (!_eop)
-		printf("RXring[%d]: no EOP flag exists\n", rxring->rxr_index);
-#endif
 
 #ifdef XXX_RXINTR_DEBUG
 	printf("%s:%d: end: readidx=%u, RX_DMA_DESC_HEAD/TAIL=%lu/%u\n", __func__, __LINE__,
@@ -4456,20 +4352,11 @@ aq_rx_intr(void *arg)
 	    AQ_READ_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx)));
 #endif
 
+ rx_intr_done:
 	mutex_exit(&rxring->rxr_mutex);
+
+	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(sc->sc_rx_irq[ringidx]));
 	return n;
-}
-
-static int
-aq_ifmedia_change(struct ifnet * const ifp)
-{
-	return aq_mediachange(ifp);
-}
-
-static void
-aq_ifmedia_status(struct ifnet * const ifp, struct ifmediareq *req)
-{
-	aq_mediastatus(ifp, req);
 }
 
 static int
@@ -4480,8 +4367,7 @@ aq_ifflags_cb(struct ethercom *ec)
 	int i, ecchange, error = 0;
 	unsigned short iffchange;
 
-	//XXX: need lock
-	printf("%s:%d\n", __func__, __LINE__);
+	AQ_LOCK(sc);
 
 	iffchange = ifp->if_flags ^ sc->sc_if_flags;
 	if ((iffchange & IFF_PROMISC) != 0)
@@ -4497,6 +4383,9 @@ aq_ifflags_cb(struct ethercom *ec)
 
 	sc->sc_ec_capenable = ec->ec_capenable;
 	sc->sc_if_flags = ifp->if_flags;
+
+	AQ_UNLOCK(sc);
+
 	return error;
 }
 
@@ -4506,17 +4395,14 @@ aq_init(struct ifnet *ifp)
 	struct aq_softc *sc = ifp->if_softc;
 	int i, error = 0;
 
-	//XXX: need lock
-	printf("%s:%d\n", __func__, __LINE__);
+	AQ_LOCK(sc);
 
 	aq_update_vlan_filters(sc);
 	aq_set_capability(sc);
 
-	/* start TX */
 	for (i = 0; i < sc->sc_nqueues; i++) {
 		aq_txring_reset(sc, &sc->sc_queue[i].txring, true);
 	}
-	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 1);
 
 	/* invalidate RX descriptor cache */
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_REG, RX_DMA_DESC_CACHE_INIT,
@@ -4528,7 +4414,6 @@ aq_init(struct ifnet *ifp)
 		if (error != 0)
 			goto aq_init_failure;
 	}
-	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_BUF_EN, 1);
 
 #ifdef XXX_DUMP_RING
 	dump_txrings(sc);
@@ -4537,8 +4422,6 @@ aq_init(struct ifnet *ifp)
 
 	aq_init_rss(sc);
 	aq_hw_l3_filter_set(sc, sc->sc_l3_filter_enable);
-
-	aq_enable_intr(sc, true, true);
 
 	/* need to start callout? */
 	if (sc->sc_poll_linkstat
@@ -4553,9 +4436,16 @@ aq_init(struct ifnet *ifp)
 	ifp->if_flags |= IFF_RUNNING;
 	ifp->if_flags &= ~IFF_OACTIVE;
 
- aq_init_failure:
+	/* start TX and RX */
+	aq_enable_intr(sc, true, true);
+	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 1);
+	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_BUF_EN, 1);
 
+ aq_init_failure:
 	sc->sc_if_flags = ifp->if_flags;
+
+	AQ_UNLOCK(sc);
+
 	return error;
 }
 
@@ -4575,7 +4465,7 @@ aq_start(struct ifnet *ifp)
 	txring = &sc->sc_queue[0].txring;	/* XXX: always use TX ring[0] */
 
 #ifdef XXX_TXDESC_DEBUG
-	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/INTR_STATUS=%08x/%08x\n",
+	printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u, INTR_MASK/STATUS=%08x/%08x\n",
 	    __func__, __LINE__, txring->txr_index,
 	    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
 	    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)),
@@ -4607,8 +4497,9 @@ aq_start(struct ifnet *ifp)
 			break;
 		}
 
-		/* start TX DMA */
-		aq_txring_start(sc, txring);
+		/* update tail ptr */
+		AQ_WRITE_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index),
+		    txring->txr_prodidx);
 
 		/* Pass the packet to any BPF listeners */
 		bpf_mtap(ifp, m, BPF_D_OUT);
@@ -4618,8 +4509,6 @@ aq_start(struct ifnet *ifp)
 
 	if (npkt)
 		ifp->if_timer = 5;
-
-//	device_printf(sc->sc_dev, "ring[%d] %d/%d\n", txring->txr_index, AQ_TXD_NUM - txring->txr_nfree, AQ_TXD_NUM);
 }
 
 static void
@@ -4628,19 +4517,26 @@ aq_stop(struct ifnet *ifp, int disable)
 	struct aq_softc *sc = ifp->if_softc;
 	int i;
 
-	//XXX: need lock
-	printf("%s:%d: disable=%d\n", __func__, __LINE__, disable);
+	AQ_LOCK(sc);
+
+	ifp->if_timer = 0;
 
 	/* disable tx/rx interrupts */
 	aq_enable_intr(sc, true, false);
 
 	AQ_WRITE_REG_BIT(sc, TPB_TX_BUF_REG, TPB_TX_BUF_EN, 0);
-	for (i = 0; i < sc->sc_nqueues; i++)
+	for (i = 0; i < sc->sc_nqueues; i++) {
+		mutex_enter(&sc->sc_queue[i].txring.txr_mutex);
 		aq_txring_reset(sc, &sc->sc_queue[i].txring, false);
+		mutex_exit(&sc->sc_queue[i].txring.txr_mutex);
+	}
 
 	AQ_WRITE_REG_BIT(sc, RPB_RPF_RX_REG, RPB_RPF_RX_BUF_EN, 0);
-	for (i = 0; i < sc->sc_nqueues; i++)
+	for (i = 0; i < sc->sc_nqueues; i++) {
+		mutex_enter(&sc->sc_queue[i].rxring.rxr_mutex);
 		aq_rxring_reset(sc, &sc->sc_queue[i].rxring, false);
+		mutex_exit(&sc->sc_queue[i].rxring.rxr_mutex);
+	}
 
 	/* invalidate RX descriptor cache */
 	AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_CACHE_INIT_REG, RX_DMA_DESC_CACHE_INIT,
@@ -4655,6 +4551,8 @@ aq_stop(struct ifnet *ifp, int disable)
 	}
 
 	ifp->if_flags &= ~(IFF_RUNNING | IFF_OACTIVE);
+
+	AQ_UNLOCK(sc);
 }
 
 static void
@@ -4662,29 +4560,28 @@ aq_watchdog(struct ifnet *ifp)
 {
 	struct aq_softc *sc = ifp->if_softc;
 	struct aq_txring *txring;
-	int n;
+	int n, head, tail;
 
-	uint32_t status;
-	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
+	AQ_LOCK(sc);
 
-	//XXX
-	printf("####!!!! %s@cpu%d: INTR_MASK/INTR_STATUS = %08x/%08x=>%08x\n", __func__, cpu_index(curcpu()), AQ_READ_REG(sc, AQ_INTR_MASK_REG), status, AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
+	device_printf(sc->sc_dev, "%s: INTR_MASK/STATUS = %08x/%08x\n", __func__,
+	     AQ_READ_REG(sc, AQ_INTR_MASK_REG), AQ_READ_REG(sc, AQ_INTR_STATUS_REG));
 
 	for (n = 0; n < sc->sc_nqueues; n++) {
 		txring = &sc->sc_queue[n].txring;
+		head = AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index),
+		    TX_DMA_DESC_HEAD_PTR),
+		tail = AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index));
 
-#if 1
-		//DEBUG
-		printf("%s:%d: ringidx=%d, HEAD/TAIL=%lu/%u\n", __func__, __LINE__, txring->txr_index,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(txring->txr_index), TX_DMA_DESC_HEAD_PTR),
-		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(txring->txr_index)));
-#endif
+		device_printf(sc->sc_dev, "%s: TXring[%d] HEAD/TAIL=%d/%d\n", __func__,
+		    txring->txr_index, head, tail);
 
 		aq_tx_intr(txring);
 	}
 
+	AQ_UNLOCK(sc);
+
 	aq_init(ifp);
-	//XXX
 }
 
 #ifdef XXX_DUMP_MACTABLE
@@ -4723,7 +4620,6 @@ aq_ioctl(struct ifnet *ifp, unsigned long cmd, void *data)
 	ifr = (struct ifreq *)data;
 	error = 0;
 
-	//XXX: need mutex lock
 	s = splnet();
 	error = ether_ioctl(ifp, cmd, data);
 	splx(s);
