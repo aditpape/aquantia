@@ -3823,9 +3823,11 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_VLAN_STRIP,
 		    (sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_HWTAGGING) ? 1 : 0);
 
-		/* reset TAIL pointer, and update readidx (HEAD pointer cannot write) */
-		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx), AQ_RXD_NUM - 1);
-		rxring->rxr_readidx = AQ_READ_REG_BIT(sc, RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
+		/* reload TAIL pointer, and update readidx (HEAD pointer cannot write) */
+		rxring->rxr_readidx = AQ_READ_REG_BIT(sc,
+		    RX_DMA_DESC_HEAD_PTR_REG(ringidx), RX_DMA_DESC_HEAD_PTR);
+		AQ_WRITE_REG(sc, RX_DMA_DESC_TAIL_PTR_REG(ringidx),
+		    (rxring->rxr_readidx + AQ_RXD_NUM - 1) % AQ_RXD_NUM);
 
 		/* Rx ring set mode */
 
@@ -3868,21 +3870,16 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
 	    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
 	if (error == EFBIG) {
-		m = m_defrag(m, M_DONTWAIT);
-		if (m != NULL) {
-			*mp = m;
+		struct mbuf *n;
+		n = m_defrag(m, M_DONTWAIT);
+		if (n != NULL) {
+			*mp = m = n;
 			error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
 			    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
 		}
 	}
-
-
-	if (error != 0) {
-		device_printf(sc->sc_dev,
-		    "Error mapping mbuf into TX chain: error=%d\n", error);
-		m_freem(m);
+	if (error != 0)
 		return error;
-	}
 
 	/*
 	 * check spaces of free descriptors.
