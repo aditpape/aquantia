@@ -130,6 +130,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
 					/* TX + RX + LINK. must be <= 32 */
+#define AQ_LINKSTAT_IRQ			31	/* for legacy mode */
+
 #if 1
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
@@ -937,6 +939,7 @@ struct aq_softc {
 	int sc_linkstat_irq;
 	bool sc_use_txrx_independent_intr;
 	bool sc_poll_linkstat;
+	bool sc_detect_linkstat;
 
 	callout_t sc_tick_ch;
 
@@ -1528,10 +1531,8 @@ aq_establish_intr(struct aq_softc *sc, int intno, kcpuset_t *affinity, int (*fun
 	intrstr = pci_intr_string(pc, sc->sc_intrs[intno], intrbuf,
 	    sizeof(intrbuf));
 
-#ifdef AQ_MPSAFE
 	pci_intr_setattr(pc, &sc->sc_intrs[intno],
 	    PCI_INTR_MPSAFE, true);
-#endif
 
 	vih = pci_intr_establish_xname(pc, sc->sc_intrs[intno],
 	    IPL_NET, func, arg, xname);
@@ -3108,6 +3109,8 @@ aq_hw_init(struct aq_softc *sc)
 	);
 
 	/* link interrupt */
+	if (!sc->sc_msix)
+		sc->sc_linkstat_irq = AQ_LINKSTAT_IRQ;
 	AQ_WRITE_REG(sc, AQ_GEN_INTR_MAP_REG(3), __BIT(7) | sc->sc_linkstat_irq);
 
 	return 0;
@@ -3603,20 +3606,29 @@ aq_txrx_rings_free(struct aq_softc *sc)
 	}
 }
 
+
 static void
 aq_tick(void *arg)
 {
 	struct aq_softc *sc = arg;
 
-	if (sc->sc_poll_linkstat)
+	if (sc->sc_poll_linkstat || sc->sc_detect_linkstat) {
+		sc->sc_detect_linkstat = false;
 		aq_update_link_status(sc);
+	}
 
 #ifdef AQ_EVENT_COUNTERS
 	if (sc->sc_poll_statistics)
 		aq_update_statistics(sc);
 #endif
 
-	callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+	if (sc->sc_poll_linkstat
+#ifdef AQ_EVENT_COUNTERS
+	    || sc->sc_poll_statistics
+#endif
+	    ) {
+		callout_reset(&sc->sc_tick_ch, hz, aq_tick, sc);
+	}
 }
 
 /* interrupt enable/disable */
@@ -3654,8 +3666,11 @@ aq_legacy_intr(void *arg)
 #endif
 	AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, 0xffffffff);
 
-	if (status & __BIT(sc->sc_linkstat_irq))
-		nintr += aq_update_link_status(sc);
+	if (status & __BIT(sc->sc_linkstat_irq)) {
+		sc->sc_detect_linkstat = true;
+		callout_reset(&sc->sc_tick_ch, 0, aq_tick, sc);
+		nintr++;
+	}
 
 	if (status & __BIT(sc->sc_rx_irq[0])) {
 		nintr += aq_rx_intr(&sc->sc_queue[0].rxring);
@@ -3711,14 +3726,16 @@ aq_link_intr(void *arg)
 
 	status = AQ_READ_REG(sc, AQ_INTR_STATUS_REG);
 #ifdef XXX_INTR_DEBUG
-	printf("%s@cpu%d: INTR_MASK/STATUS = %08x/%08\n",
+	printf("%s@cpu%d: INTR_MASK/STATUS = %08x/%08x\n",
 	    __func__, cpu_index(curcpu()),
 	    AQ_READ_REG(sc, AQ_INTR_MASK_REG), status);
 #endif
 
 	if (status & __BIT(sc->sc_linkstat_irq)) {
-		nintr = aq_update_link_status(sc);
+		sc->sc_detect_linkstat = true;
+		callout_reset(&sc->sc_tick_ch, 0, aq_tick, sc);
 		AQ_WRITE_REG(sc, AQ_INTR_STATUS_CLR_REG, __BIT(sc->sc_linkstat_irq));
+		nintr++;
 	}
 
 	return nintr;
@@ -3872,24 +3889,24 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	if (error == EFBIG) {
 		struct mbuf *n;
 		n = m_defrag(m, M_DONTWAIT);
-		if (n != NULL) {
-			*mp = m = n;
-			error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
-			    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
-		}
+		if (n == NULL)
+			return EFBIG;
+		/* m_defrag() preserve m */
+		KASSERT(n == m);
+		error = bus_dmamap_load_mbuf(sc->sc_dmat, map, m,
+		    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
 	}
 	if (error != 0)
 		return error;
 
 	/*
 	 * check spaces of free descriptors.
-	 * +1 is reserved for context descriptor for vlan, etc,.
+	 * +1 is additional descriptor for context (vlan, etc,.)
 	 */
-	if ((map->dm_nsegs + 1)  > txring->txr_nfree) {
-		bus_dmamap_unload(sc->sc_dmat, map);
+	if ((map->dm_nsegs + 1) > txring->txr_nfree) {
 		device_printf(sc->sc_dev,
-		    "too many mbuf chain %d\n", map->dm_nsegs);
-		m_freem(m);
+		    "TX: not enough descriptors left %d for %d segs\n", txring->txr_nfree, map->dm_nsegs + 1);
+		bus_dmamap_unload(sc->sc_dmat, map);
 		return ENOBUFS;
 	}
 
@@ -4047,7 +4064,7 @@ aq_tx_intr(void *arg)
 	}
 	txring->txr_considx = idx;
 
-	if (txring->txr_nfree > 0)
+	if (ringidx == 0 && txring->txr_nfree >= 2)
 		ifp->if_flags &= ~IFF_OACTIVE;
 
 	/* no more pending TX packet, cancel watchdog */
@@ -4491,10 +4508,12 @@ aq_start(struct ifnet *ifp)
 {
 	struct aq_softc *sc;
 	struct mbuf *m;
-	int npkt;
 	struct aq_txring *txring;
+	int npkt, error;
 
-	if ((ifp->if_flags & (IFF_RUNNING | IFF_OACTIVE)) != IFF_RUNNING)
+	if ((ifp->if_flags & IFF_RUNNING) == 0)
+		return;
+	if ((ifp->if_flags & IFF_OACTIVE) != 0)
 		return;
 
 	sc = ifp->if_softc;
@@ -4516,21 +4535,20 @@ aq_start(struct ifnet *ifp)
 		if (m == NULL)
 			break;
 
-		if (txring->txr_nfree <= 0) {
-			/* no tx descriptor now... */
-			ifp->if_flags |= IFF_OACTIVE;
+		if (txring->txr_nfree < 2) {
 			device_printf(sc->sc_dev, "TX descriptor is full\n");
 			break;
 		}
 
 		IFQ_DEQUEUE(&ifp->if_snd, m);
 
-		if (aq_encap_txring(sc, txring, &m) != 0) {
-			/* too many mbuf chains? */
-			device_printf(sc->sc_dev,
-			    "TX descriptor enqueueing failure. dropping packet\n");
+		error = aq_encap_txring(sc, txring, &m);
+		if (error != 0) {
+			/* too many mbuf chains? or not enough descriptors? */
 			m_freem(m);
 			ifp->if_oerrors++;
+			if (error == ENOBUFS)
+				ifp->if_flags |= IFF_OACTIVE;
 			break;
 		}
 
@@ -4541,6 +4559,9 @@ aq_start(struct ifnet *ifp)
 		/* Pass the packet to any BPF listeners */
 		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
+
+	if (txring->txr_nfree <= 2)
+		ifp->if_flags |= IFF_OACTIVE;
 
 	mutex_exit(&txring->txr_mutex);
 
