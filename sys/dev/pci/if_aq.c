@@ -1891,14 +1891,8 @@ aq_fw_reset(struct aq_softc *sc)
 		    "F/W bootload error: unknown bootloader type\n");
 		return ENOTSUP;
 	case FW_BOOT_MODE_RBL_HOST_BOOTLOAD:
-#if 0 /* AQ_CFG_HOST_BOOT_DISABLE */
-		aprint_error_dev(sc->sc_dev, "RBL> Host Bootload mode: "
-		    "this driver does not support Host Boot\n");
-		return ENOTSUP;
-#else
 		aprint_debug_dev(sc->sc_dev, "RBL> Host Bootload mode\n");
 		break;
-#endif
 	}
 
 	/*
@@ -1961,9 +1955,9 @@ aq_hw_init_ucp(struct aq_softc *sc)
 #define AQ_FW_MIN_VERSION_STR	"1.5.6"
 	if (sc->sc_fw_version < AQ_FW_MIN_VERSION) {
 		aprint_error_dev(sc->sc_dev,
-		    "atlantic: wrong FW version: expected:"
+		    "atlantic: wrong FW version: "
 		    AQ_FW_MIN_VERSION_STR
-		    " actual:%d.%d.%d\n",
+		    " or later required, this is %d.%d.%d\n",
 		    FW_VERSION_MAJOR(sc),
 		    FW_VERSION_MINOR(sc),
 		    FW_VERSION_BUILD(sc));
@@ -2656,16 +2650,9 @@ aq_initmedia(struct aq_softc *sc)
 	IFMEDIA_ETHER_ADD(sc, IFM_AUTO);
 	IFMEDIA_ETHER_ADD(sc, IFM_AUTO | IFM_FLOW);
 
-	/* default media */
-#if 0
-	/* default: auto with flowcontrol */
-	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO | IFM_FLOW);
-	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_ALL, AQ_EEE_DISABLE);
-#else
 	/* default: auto without flowcontrol */
 	ifmedia_set(&sc->sc_media, IFM_ETHER | IFM_AUTO);
 	aq_set_linkmode(sc, AQ_LINK_AUTO, AQ_FC_NONE, AQ_EEE_DISABLE);
-#endif
 }
 
 static int
@@ -3922,40 +3909,6 @@ aq_tx_intr(void *arg)
 
 	for (idx = txring->txr_considx; idx != hw_head;
 	    idx = TXRING_NEXTIDX(idx), n++) {
-
-#if 0
-		printf("# %s:%d: txring=%d, TX CLEANUP: HEAD/TAIL=%lu/%u,"
-		    " considx/prodidx=%d/%d, idx=%d\n", __func__, __LINE__,
-		    ringidx,
-		    AQ_READ_REG_BIT(sc, TX_DMA_DESC_HEAD_PTR_REG(ringidx),
-		    TX_DMA_DESC_HEAD_PTR),
-		    AQ_READ_REG(sc, TX_DMA_DESC_TAIL_PTR_REG(ringidx)),
-		    txring->txr_considx,
-		    txring->txr_prodidx,
-		    idx);
-#endif
-
-#if 0
-		/* DEBUG: show done txdesc */
-		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
-		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
-		    BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE);
-		printf("%s:%d: written txdesc[%3d] buf_addr=%012lx,"
-		    " ctl=%08x ctl2=%08x\n", __func__, __LINE__, idx,
-		    txring->txr_txdesc[idx].buf_addr,
-		    txring->txr_txdesc[idx].ctl1,
-		    txring->txr_txdesc[idx].ctl2);
-#endif
-
-#if 0
-		/* DEBUG: clear done txdesc */
-		txring->txr_txdesc[idx].buf_addr = 0;
-		txring->txr_txdesc[idx].ctl1 = AQ_TXDESC_CTL1_DD;
-		txring->txr_txdesc[idx].ctl2 = 0;
-		bus_dmamap_sync(sc->sc_dmat, txring->txr_txdesc_dmamap,
-		    sizeof(aq_tx_desc_t) * idx, sizeof(aq_tx_desc_t),
-		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
-#endif
 
 		if (txring->txr_mbufs[idx].m != NULL) {
 			bus_dmamap_unload(sc->sc_dmat,
