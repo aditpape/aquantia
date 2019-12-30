@@ -99,14 +99,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 					/* TX + RX + LINK. must be <= 32 */
 #define AQ_LINKSTAT_IRQ			31	/* for legacy mode */
 
-#if 1
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
-#else
-/* stress debug */
-#define AQ_TXD_NUM			8	/* per ring. 8*n && <= 8184 */
-#define AQ_RXD_NUM			8	/* per ring. 8*n && <= 8184 */
-#endif
 
 /* hardware specification */
 #define AQ_RINGS_NUM			32

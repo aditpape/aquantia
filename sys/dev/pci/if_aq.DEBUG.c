@@ -15,6 +15,7 @@
 //#define XXX_DUMP_MACTABLE
 //#define XXX_DUMP_RING
 //#define XXX_DUMP_RSSKEY
+//#define XXX_ONLY_8_DESCRIPTOR_TEST
 
 /*	$NetBSD$	*/
 
@@ -122,10 +123,12 @@ __KERNEL_RCSID(0, "$NetBSD$");
 					/* TX + RX + LINK. must be <= 32 */
 #define AQ_LINKSTAT_IRQ			31	/* for legacy mode */
 
-#if 1
 #define AQ_TXD_NUM			2048	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			2048	/* per ring. 8*n && <= 8184 */
-#else
+
+#ifdef XXX_ONLY_8_DESCRIPTOR_TEST
+#undef AQ_TXD_NUM
+#undef  AQ_RXD_NUM
 /* stress debug */
 #define AQ_TXD_NUM			8	/* per ring. 8*n && <= 8184 */
 #define AQ_RXD_NUM			8	/* per ring. 8*n && <= 8184 */
