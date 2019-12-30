@@ -1270,7 +1270,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	    "ncpu=%d, pci_msix_count=%d -> nqueues=%d%s, linkstat_intr=%d\n",
 	    ncpu, msixcount, sc->sc_nqueues,
 	    sc->sc_use_txrx_independent_intr ? "*2" : "",
-	    !sc->sc_poll_linkstat);
+	    sc->sc_poll_linkstat ? 0 : 1);
 
 #ifdef XXX_NO_MSIX
 	sc->sc_msix = false;
