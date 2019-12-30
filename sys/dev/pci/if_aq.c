@@ -88,24 +88,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/types.h>
+
+#include <sys/types.h>
 #include <sys/bitops.h>
 #include <sys/bus.h>
-#include <sys/callout.h>
 #include <sys/cprng.h>
-#include <sys/cpu.h>
-#include <sys/device.h>
-#include <sys/errno.h>
-#include <sys/intr.h>
 #include <sys/interrupt.h>
-#include <sys/ioctl.h>
-#include <sys/kernel.h>
-#include <sys/malloc.h>
-#include <sys/mbuf.h>
 #include <sys/module.h>
-#include <sys/socket.h>
-#include <sys/systm.h>
-
-#include <machine/endian.h>
+#include <sys/pcq.h>
 
 #ifdef XXX_DEBUG_PMAP_EXTRACT
 #include <uvm/uvm_extern.h>
@@ -1202,10 +1192,9 @@ aq_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_pc = pc = pa->pa_pc;
 	sc->sc_pcitag = tag = pa->pa_tag;
+	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
 #ifdef XXX_FORCE_32BIT_PA
 	sc->sc_dmat = pa->pa_dmat;
-#else
-	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
 #endif
 
 	command = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
@@ -1317,7 +1306,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	else
 		sc->sc_rss_enable = false;
 
-
 #ifdef CONFIG_L3_FILTER_SUPPORT
 	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_SUPPORT;
 #endif
@@ -1349,7 +1337,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 	error = aq_hw_init(sc);	/* initialize and interrupts */
 	if (error != 0)
 		goto attach_failure;
-
 
 	sc->sc_media_type = aqp->aq_media_type;
 	sc->sc_available_rates = aqp->aq_available_rates;
@@ -3724,7 +3711,6 @@ aq_txrx_rings_free(struct aq_softc *sc)
 	}
 }
 
-
 static void
 aq_tick(void *arg)
 {
@@ -4071,7 +4057,6 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 
 		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_VLAN;
 		ctl2 |= AQ_TXDESC_CTL2_CTX_EN;
-
 
 		/* fill context descriptor and forward index */
 		txring->txr_txdesc[idx].buf_addr = 0;
