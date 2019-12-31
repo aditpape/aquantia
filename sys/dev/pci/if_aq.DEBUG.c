@@ -4009,7 +4009,7 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
 		    paddr);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
-		    paddr >> 32);
+		    (uint32_t)((uint64_t)paddr >> 32));
 
 		/* TX descriptor size */
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_REG(ringidx), TX_DMA_DESC_LEN,
@@ -4073,7 +4073,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
 		    paddr);
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
-		    paddr >> 32);
+		    (uint32_t)((uint64_t)paddr >> 32));
 
 		/* RX descriptor size */
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_LEN,
@@ -4413,7 +4413,8 @@ aq_rx_intr(void *arg)
 
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
-			/* XXX */
+			ifp->if_ierrors++;
+#ifdef XXX_RXDESC_DEBUG
 			device_printf(sc->sc_dev,
 			    "DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x,"
 			    " status=0x%08x, pktlen=%u, nextdesc=%u,"
@@ -4421,16 +4422,17 @@ aq_rx_intr(void *arg)
 			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen,
 			    rxd_nextdescptr, rxd_vlan);
 			device_printf(sc->sc_dev,
-			    "DMA_ERR: type: rsstype=0x%lx, rdm=%ld,"
-			    " ipv4checked=%ld, tcpudpchecked=%ld,"
-			    " sph=%ld, hdrlen=%ld\n",
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_MAC_DMA_ERR),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_type,
+			    "DMA_ERR: type: rsstype=0x%x, rdm=%u,"
+			    " ipv4checked=%u, tcpudpchecked=%u,"
+			    " sph=%u, hdrlen=%u\n",
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_MAC_DMA_ERR),
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
+			    (uint32_t)__SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+#endif
 			goto rx_next;
 		}
 
@@ -4584,14 +4586,14 @@ aq_rx_intr(void *arg)
 			unsigned int pkttype_eth =
 			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_ETHER);
 
-			printf("RXring[%d].desc[%d] rsstype=0x%lx(%s),"
-			    " RssHash=0x%08x, pkttype_vlan=%lu/%lu,"
+			printf("RXring[%d].desc[%d] rsstype=0x%x(%s),"
+			    " RssHash=0x%08x, pkttype_vlan=%u/%u,"
 			    " pkttype_eth=%u(%s), pkttype_proto=%u(%s)\n",
 			    ringidx, idx,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE), rsstype,
 			    rxd_hash,
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
-			    __SHIFTOUT(rxd_type,
+			    (uint32_t)__SHIFTOUT(rxd_type, RXDESC_TYPE_PKTTYPE_VLAN),
+			    (uint32_t)__SHIFTOUT(rxd_type,
 			    RXDESC_TYPE_PKTTYPE_VLAN_DOUBLE),
 			    pkttype_eth, pkttype_eth_table[pkttype_eth],
 			    pkttype_proto, pkttype_proto_table[pkttype_proto]);

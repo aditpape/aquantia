@@ -3790,7 +3790,7 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
 		    paddr);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
-		    paddr >> 32);
+		    (uint32_t)((uint64_t)paddr >> 32));
 
 		/* TX descriptor size */
 		AQ_WRITE_REG_BIT(sc, TX_DMA_DESC_REG(ringidx), TX_DMA_DESC_LEN,
@@ -3854,7 +3854,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
 		    paddr);
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
-		    paddr >> 32);
+		    (uint32_t)((uint64_t)paddr >> 32));
 
 		/* RX descriptor size */
 		AQ_WRITE_REG_BIT(sc, RX_DMA_DESC_REG(ringidx), RX_DMA_DESC_LEN,
@@ -4116,24 +4116,7 @@ aq_rx_intr(void *arg)
 
 		if ((rxd_status & RXDESC_STATUS_MACERR) ||
 		    (rxd_type & RXDESC_TYPE_MAC_DMA_ERR)) {
-			/* XXX */
-			device_printf(sc->sc_dev,
-			    "DMA_ERR: desc[%d] type=0x%08x, hash=0x%08x,"
-			    " status=0x%08x, pktlen=%u, nextdesc=%u,"
-			    " vlan=0x%x\n",
-			    idx, rxd_type, rxd_hash, rxd_status, rxd_pktlen,
-			    rxd_nextdescptr, rxd_vlan);
-			device_printf(sc->sc_dev,
-			    "DMA_ERR: type: rsstype=0x%lx, rdm=%ld,"
-			    " ipv4checked=%ld, tcpudpchecked=%ld,"
-			    " sph=%ld, hdrlen=%ld\n",
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_RSSTYPE),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_MAC_DMA_ERR),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_IPV4_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_type,
-			    RXDESC_TYPE_TCPUDP_CSUM_CHECKED),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_SPH),
-			    __SHIFTOUT(rxd_type, RXDESC_TYPE_HDR_LEN));
+			ifp->if_ierrors++;
 			goto rx_next;
 		}
 
