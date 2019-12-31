@@ -89,9 +89,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <dev/pci/pcidevs.h>
 
 /* driver configuration */
-#define CONFIG_INTR_MODERATION_ENABLE	1	/* delayed interrupt */
+#define CONFIG_INTR_MODERATION_ENABLE	true	/* delayed interrupt */
 #undef CONFIG_LRO_SUPPORT			/* no LRO not suppoted */
-#undef CONFIG_L3_FILTER_SUPPORT			/* no L3 filter suppoted */
 #undef CONFIG_NO_TXRX_INDEPENDENT		/* share TX/RX interrupts */
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
@@ -337,7 +336,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define  RPF_RSS_REDIR_WR_DATA			__BITS(15,0)
 
 #define RPO_HWCSUM_REG				0x5580
-#define  RPO_HWCSUM_IPV4CSUM_EN			__BIT(1)
+#define  RPO_HWCSUM_IP4CSUM_EN			__BIT(1)
 #define  RPO_HWCSUM_L4CSUM_EN			__BIT(0) /* TCP/UDP/SCTP */
 
 #define RPO_LRO_ENABLE_REG			0x5590
@@ -449,7 +448,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define AQ_HW_RXBUF_MAX		320
 
 #define TPO_HWCSUM_REG				0x7800
-#define  TPO_HWCSUM_IPV4CSUM_EN			__BIT(1)
+#define  TPO_HWCSUM_IP4CSUM_EN			__BIT(1)
 #define  TPO_HWCSUM_L4CSUM_EN			__BIT(0) /* TCP/UDP/SCTP */
 
 #define TDM_LSO_EN_REG				0x7810
@@ -828,7 +827,7 @@ typedef struct aq_tx_desc {
 #define AQ_TXDESC_CTL1_EOP		__BIT(21)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_VLAN		__BIT(22)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_FCS		__BIT(23)	/* TXD */
-#define AQ_TXDESC_CTL1_CMD_IPV4CSUM	__BIT(24)	/* TXD */
+#define AQ_TXDESC_CTL1_CMD_IP4CSUM	__BIT(24)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_L4CSUM	__BIT(25)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_LSO		__BIT(26)	/* TXD */
 #define AQ_TXDESC_CTL1_CMD_WB		__BIT(27)	/* TXD */
@@ -986,7 +985,6 @@ struct aq_softc {
 
 	bool sc_intr_moderation_enable;
 	bool sc_rss_enable;
-	bool sc_l3_filter_enable;
 
 	int sc_media_active;
 
@@ -1036,7 +1034,8 @@ static int aq_ifmedia_change(struct ifnet * const);
 static void aq_ifmedia_status(struct ifnet * const, struct ifmediareq *);
 static int aq_ifflags_cb(struct ethercom *);
 static int aq_init(struct ifnet *);
-static void aq_send_common_locked(struct ifnet *, struct aq_softc *, struct aq_txring *, bool);
+static void aq_send_common_locked(struct ifnet *, struct aq_softc *,
+    struct aq_txring *, bool);
 static int aq_transmit(struct ifnet *, struct mbuf *);
 static void aq_deferred_transmit(void *);
 static void aq_start(struct ifnet *);
@@ -1209,6 +1208,7 @@ aq_attach(device_t parent, device_t self, void *aux)
 	sc->sc_pc = pc = pa->pa_pc;
 	sc->sc_pcitag = tag = pa->pa_tag;
 	sc->sc_dmat = pci_dma64_available(pa) ? pa->pa_dmat64 : pa->pa_dmat;
+
 	command = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
 	command |= PCI_COMMAND_MASTER_ENABLE;
 	pci_conf_write(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG, command);
@@ -1316,10 +1316,6 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_rss_enable = true;
 	else
 		sc->sc_rss_enable = false;
-
-#ifdef CONFIG_L3_FILTER_SUPPORT
-	sc->sc_l3_filter_enable = CONFIG_L3_FILTER_SUPPORT;
-#endif
 
 	error = aq_txrx_rings_alloc(sc);
 	if (error != 0)
@@ -2480,9 +2476,9 @@ static int
 aq_set_capability(struct aq_softc *sc)
 {
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-	int ipv4csum_tx =
-	   ((ifp->if_capenable & IFCAP_CSUM_IPv4_Tx) == 0) ? 0 : 1;
-	int ipv4csum_rx =
+	int ip4csum_tx =
+	    ((ifp->if_capenable & IFCAP_CSUM_IPv4_Tx) == 0) ? 0 : 1;
+	int ip4csum_rx =
 	    ((ifp->if_capenable & IFCAP_CSUM_IPv4_Rx) == 0) ? 0 : 1;
 	int l4csum_tx = ((ifp->if_capenable &
 	   (IFCAP_CSUM_TCPv4_Tx | IFCAP_CSUM_UDPv4_Tx |
@@ -2498,16 +2494,12 @@ aq_set_capability(struct aq_softc *sc)
 	uint32_t i, v;
 
 	/* TX checksums offloads*/
-	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG,
-	    TPO_HWCSUM_IPV4CSUM_EN, ipv4csum_tx);
-	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG,
-	    TPO_HWCSUM_L4CSUM_EN, l4csum_tx);
+	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_IP4CSUM_EN, ip4csum_tx);
+	AQ_WRITE_REG_BIT(sc, TPO_HWCSUM_REG, TPO_HWCSUM_L4CSUM_EN, l4csum_tx);
 
 	/* RX checksums offloads*/
-	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG,
-	    RPO_HWCSUM_IPV4CSUM_EN, ipv4csum_rx);
-	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG,
-	    RPO_HWCSUM_L4CSUM_EN, l4csum_rx);
+	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG, RPO_HWCSUM_IP4CSUM_EN, ip4csum_rx);
+	AQ_WRITE_REG_BIT(sc, RPO_HWCSUM_REG, RPO_HWCSUM_L4CSUM_EN, l4csum_rx);
 
 	/* LSO offloads*/
 	AQ_WRITE_REG(sc, TDM_LSO_EN_REG, lso);
@@ -3099,7 +3091,7 @@ aq_init_rss(struct aq_softc *sc)
 }
 
 static void
-aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
+aq_hw_l3_filter_set(struct aq_softc *sc)
 {
 	int i;
 
@@ -3107,9 +3099,6 @@ aq_hw_l3_filter_set(struct aq_softc *sc, bool enable)
 	for (i = 0; i < 8; i++) {
 		AQ_WRITE_REG_BIT(sc, RPF_L3_FILTER_REG(i),
 		    RPF_L3_FILTER_L4_EN, 0);
-	}
-
-	if (!enable) {
 	}
 }
 
@@ -3606,7 +3595,8 @@ aq_tx_pcq_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	txring->txr_pcq = pcq_create(AQ_TXD_NUM, KM_NOSLEEP);
 	if (txring->txr_pcq == NULL) {
 		aprint_error_dev(sc->sc_dev,
-		    "unable to allocate pcq for TXring[%d]\n", txring->txr_index);
+		    "unable to allocate pcq for TXring[%d]\n",
+		    txring->txr_index);
 		error = ENOMEM;
 		goto done;
 	}
@@ -3615,7 +3605,8 @@ aq_tx_pcq_alloc(struct aq_softc *sc, struct aq_txring *txring)
 	    aq_deferred_transmit, txring);
 	if (txring->txr_softint == NULL) {
 		aprint_error_dev(sc->sc_dev,
-		    "unable to establish softint for TXring[%d]\n", txring->txr_index);
+		    "unable to establish softint for TXring[%d]\n",
+		    txring->txr_index);
 		error = ENOENT;
 	}
 
@@ -3787,8 +3778,7 @@ aq_txring_reset(struct aq_softc *sc, struct aq_txring *txring, bool start)
 	if (start) {
 		/* TX descriptor physical address */
 		paddr_t paddr = txring->txr_txdesc_dmamap->dm_segs[0].ds_addr;
-		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
-		    paddr);
+		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRLSW_REG(ringidx), paddr);
 		AQ_WRITE_REG(sc, TX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
 		    (uint32_t)((uint64_t)paddr >> 32));
 
@@ -3851,8 +3841,7 @@ aq_rxring_reset(struct aq_softc *sc, struct aq_rxring *rxring, bool start)
 
 		/* RX descriptor physical address */
 		paddr_t paddr = rxring->rxr_rxdesc_dmamap->dm_segs[0].ds_addr;
-		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx),
-		    paddr);
+		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRLSW_REG(ringidx), paddr);
 		AQ_WRITE_REG(sc, RX_DMA_DESC_BASE_ADDRMSW_REG(ringidx),
 		    (uint32_t)((uint64_t)paddr >> 32));
 
@@ -3978,7 +3967,7 @@ aq_encap_txring(struct aq_softc *sc, struct aq_txring *txring, struct mbuf **mp)
 	}
 
 	if (m->m_pkthdr.csum_flags & M_CSUM_IPv4)
-		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_IPV4CSUM;
+		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_IP4CSUM;
 	if (m->m_pkthdr.csum_flags &
 	    (M_CSUM_TCPv4 | M_CSUM_UDPv4 | M_CSUM_TCPv6 | M_CSUM_UDPv6)) {
 		ctl1_ctx |= AQ_TXDESC_CTL1_CMD_L4CSUM;
@@ -4313,7 +4302,7 @@ aq_init(struct ifnet *ifp)
 		}
 	}
 	aq_init_rss(sc);
-	aq_hw_l3_filter_set(sc, sc->sc_l3_filter_enable);
+	aq_hw_l3_filter_set(sc);
 
 	/* need to start callout? */
 	if (sc->sc_poll_linkstat
@@ -4342,7 +4331,8 @@ aq_init(struct ifnet *ifp)
 }
 
 static void
-aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc, struct aq_txring *txring, bool is_transmit)
+aq_send_common_locked(struct ifnet *ifp, struct aq_softc *sc,
+    struct aq_txring *txring, bool is_transmit)
 {
 	struct mbuf *m;
 	int npkt, error;
