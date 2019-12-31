@@ -92,6 +92,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define CONFIG_INTR_MODERATION_ENABLE	1	/* delayed interrupt */
 #undef CONFIG_LRO_SUPPORT			/* no LRO not suppoted */
 #undef CONFIG_L3_FILTER_SUPPORT			/* no L3 filter suppoted */
+#undef CONFIG_NO_TXRX_INDEPENDENT		/* share TX/RX interrupts */
 
 #define AQ_NINTR_MAX			(AQ_RSSQUEUE_MAX + AQ_RSSQUEUE_MAX + 1)
 					/* TX + RX + LINK. must be <= 32 */
@@ -1246,6 +1247,19 @@ aq_attach(device_t parent, device_t self, void *aux)
 		sc->sc_nqueues = 1;
 
 	int msixcount = pci_msix_count(pa->pa_pc, pa->pa_tag);
+#ifndef CONFIG_NO_TXRX_INDEPENDENT
+	if (msixcount >= (sc->sc_nqueues * 2 + 1)) {
+		/* TX intrs + RX intrs + LINKSTAT intrs */
+		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_poll_linkstat = false;
+		sc->sc_msix = true;
+	} else if (msixcount >= (sc->sc_nqueues * 2)) {
+		/* TX intrs + RX intrs */
+		sc->sc_use_txrx_independent_intr = true;
+		sc->sc_poll_linkstat = true;
+		sc->sc_msix = true;
+	} else
+#endif
 	if (msixcount >= (sc->sc_nqueues + 1)) {
 		/* TX/RX intrs LINKSTAT intrs */
 		sc->sc_use_txrx_independent_intr = false;
