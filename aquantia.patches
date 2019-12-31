@@ -13,14 +13,13 @@ diff -u -r1.18 ethertypes.h
  #define	ETHERTYPE_FCOE		0x8906	/* Fibre Channel over Ethernet */
  #define	ETHERTYPE_LOOPBACK	0x9000	/* Loopback */
  #define	ETHERTYPE_LBACK		ETHERTYPE_LOOPBACK	/* DEC MOP loopback */
-
 Index: sys/dev/pci/files.pci
 ===================================================================
 RCS file: /src/cvs/cvsroot-netbsd/src/sys/dev/pci/files.pci,v
 retrieving revision 1.418
-diff -a -u -r1.418 files.pci
---- files.pci	10 Dec 2019 12:08:52 -0000	1.418
-+++ files.pci	26 Dec 2019 09:10:34 -0000
+diff -u -r1.418 files.pci
+--- sys/dev/pci/files.pci	10 Dec 2019 12:08:52 -0000	1.418
++++ sys/dev/pci/files.pci	26 Dec 2019 09:10:34 -0000
 @@ -167,6 +167,12 @@
  attach	mpii at pci
  file	dev/pci/mpii.c			mpii
@@ -34,14 +33,13 @@ diff -a -u -r1.418 files.pci
  # Ethernet driver for DC21040-based boards
  device	de: ether, ifnet, arp
  attach	de at pci
-
 Index: sys/dev/pci/pcidevs
 ===================================================================
 RCS file: /src/cvs/cvsroot-netbsd/src/sys/dev/pci/pcidevs,v
-retrieving revision 1.1390
-diff -u -r1.1390 pcidevs
---- sys/dev/pci/pcidevs	8 Nov 2019 04:37:45 -0000	1.1390
-+++ sys/dev/pci/pcidevs	9 Nov 2019 08:26:52 -0000
+retrieving revision 1.1394
+diff -u -r1.1394 pcidevs
+--- sys/dev/pci/pcidevs	29 Dec 2019 01:42:45 -0000	1.1394
++++ sys/dev/pci/pcidevs	29 Dec 2019 21:04:22 -0000
 @@ -651,6 +651,7 @@
  vendor HGST		0x1c58	HGST, Inc.
  vendor BEIJING_MEMBLAZE	0x1c5f	Beijing Memblaze Technology Co. Ltd.
@@ -50,7 +48,7 @@ diff -u -r1.1390 pcidevs
  vendor ROCKCHIP		0x1d87	Rockchip
  vendor TEKRAM2		0x1de1	Tekram Technology (2nd PCI Vendor ID)
  vendor SUNIX2		0x1fd4	SUNIX Co
-@@ -1282,6 +1283,21 @@
+@@ -1287,6 +1288,21 @@
  product APPLE INTREPID2_GMAC	0x006b	Intrepid 2 GMAC
  product APPLE BCM5701		0x1645	BCM5701
  
@@ -72,3 +70,50 @@ diff -u -r1.1390 pcidevs
  /* ARC Logic products */
  product ARC 1000PV	0xa091	1000PV
  product ARC 2000PV	0xa099	2000PV
+Index: share/man/man4/Makefile
+===================================================================
+RCS file: /src/cvs/cvsroot-netbsd/src/share/man/man4/Makefile,v
+retrieving revision 1.692
+diff -u -r1.692 Makefile
+--- share/man/man4/Makefile	23 Dec 2019 06:45:37 -0000	1.692
++++ share/man/man4/Makefile	31 Dec 2019 17:15:00 -0000
+@@ -6,7 +6,7 @@
+ 	adc.4 adm1026hm.4 admtemp.4 adv.4 adw.4 age.4 agp.4 agr.4 ahb.4 ahc.4 \
+ 	ahcisata.4 ahd.4 aibs.4 alc.4 ale.4 alipm.4 altmem.4 altq.4 \
+ 	am2315temp.4 amdpm.4 amdtemp.4 amhphy.4 amr.4 aps.4 asus.4 \
+-	an.4 arcmsr.4 arcofi.4 aria.4 artsata.4 ata.4 atalk.4 ataraid.4 \
++	an.4 aq.4 arcmsr.4 arcofi.4 aria.4 artsata.4 ata.4 atalk.4 ataraid.4 \
+ 	ath.4 athn.4 atphy.4 atppc.4 attimer.4 atw.4 \
+ 	auacer.4 audio.4 audiocs.4 auich.4 \
+ 	auixp.4 autri.4 auvia.4 awi.4 azalia.4 \
+Index: distrib/sets/lists/man/mi
+===================================================================
+RCS file: /src/cvs/cvsroot-netbsd/src/distrib/sets/lists/man/mi,v
+retrieving revision 1.1667
+diff -u -r1.1667 mi
+--- distrib/sets/lists/man/mi	23 Dec 2019 06:45:37 -0000	1.1667
++++ distrib/sets/lists/man/mi	31 Dec 2019 17:16:06 -0000
+@@ -855,6 +855,7 @@
+ ./usr/share/man/cat4/ams.0			man-sys-catman		.cat
+ ./usr/share/man/cat4/an.0			man-sys-catman		.cat
+ ./usr/share/man/cat4/aps.0			man-sys-catman		.cat
++./usr/share/man/cat4/aq.0			man-sys-catman		.cat
+ ./usr/share/man/cat4/arc/intro.0		man-sys-catman		.cat
+ ./usr/share/man/cat4/arcmsr.0			man-sys-catman		.cat
+ ./usr/share/man/cat4/arcofi.0			man-sys-catman		.cat
+@@ -4077,6 +4078,7 @@
+ ./usr/share/man/html4/ams.html			man-sys-htmlman		html
+ ./usr/share/man/html4/an.html			man-sys-htmlman		html
+ ./usr/share/man/html4/aps.html			man-sys-htmlman		html
++./usr/share/man/html4/aq.html			man-sys-htmlman		html
+ ./usr/share/man/html4/arc/intro.html		man-sys-htmlman		html
+ ./usr/share/man/html4/arcmsr.html		man-sys-htmlman		html
+ ./usr/share/man/html4/arcofi.html		man-sys-htmlman		html
+@@ -6995,6 +6997,7 @@
+ ./usr/share/man/man4/ams.4			man-sys-man		.man
+ ./usr/share/man/man4/an.4			man-sys-man		.man
+ ./usr/share/man/man4/aps.4			man-sys-man		.man
++./usr/share/man/man4/aq.4			man-sys-man		.man
+ ./usr/share/man/man4/arc/intro.4		man-sys-man		.man
+ ./usr/share/man/man4/arcmsr.4			man-sys-man		.man
+ ./usr/share/man/man4/arcofi.4			man-sys-man		.man
